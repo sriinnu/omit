@@ -1,0 +1,8 @@
+Done — all 5 tests pass (2 existing + 3 new subtests I added).
+
+Changes:
+
+- **`server.mjs`** — the POST /items handler now returns 400 with `{ "error": "..." }` unless `name` is a non-empty string and `price` is a number `>= 0`. The `!(price >= 0)` form also rejects `NaN` (which `typeof` alone would let through).
+- **`test/api.test.mjs`** — added a subtest covering six invalid bodies (missing fields, empty name, non-string name, negative price, string price, `NaN` price — which JSON-serializes to `null`), plus a boundary check that `price: 0` is still accepted with 201.
+
+--- stderr ---

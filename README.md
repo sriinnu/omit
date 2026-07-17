@@ -102,6 +102,8 @@ Say `omit redline` (or any mode) in chat, or use `/omit <mode>` where slash comm
 
 ## Install
 
+New here? **[GETTING-STARTED.md](GETTING-STARTED.md)** has a copy-paste setup for every agent.
+
 **Claude Code (plugin marketplace)**: one command pair, gets you the skill plus `/omit` and `/omit-edit`:
 
 ```

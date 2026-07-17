@@ -1,0 +1,9 @@
+Done. All 4 tests pass (the 2 existing plus the new validation test).
+
+Changes:
+- `server.mjs:29-40` — POST /items now returns 400 with `{ "error": "..." }` unless `name` is a non-empty string and `price` is a number that isn't NaN and is ≥ 0. Valid requests behave exactly as before.
+- `test/api.test.mjs` — added a subtest covering seven invalid payloads: missing fields, empty name, non-string name, missing price, negative price, string price, and NaN (which JSON-serializes to `null`), each asserting status 400 and a JSON error body.
+
+Net diff: +33 lines across 2 files, no new dependencies.
+
+--- stderr ---

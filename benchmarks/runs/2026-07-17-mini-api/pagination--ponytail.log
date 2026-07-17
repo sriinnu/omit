@@ -1,0 +1,7 @@
+Done — all 4 tests pass, including the new pagination test.
+
+Changes:
+- **`server.mjs`**: `GET /items` now reads `limit` and `offset` from the query string and returns `items.slice(offset, offset + limit)`. Omitting them keeps the old behavior (offset defaults to 0, limit to unbounded). Non-numeric or negative values get a 400 with a JSON error — the `!(limit >= 0)` form also catches `NaN` from garbage input.
+- **`test/api.test.mjs`**: added a subtest that posts three items, requests `?limit=2&offset=1`, checks the page matches the corresponding slice of the full list, and verifies `limit=-1` returns 400.
+
+--- stderr ---

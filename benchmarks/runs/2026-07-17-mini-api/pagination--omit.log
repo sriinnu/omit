@@ -1,0 +1,9 @@
+Done. GET /items now supports `limit` and `offset` query parameters, and all 4 tests pass (the 2 existing plus the new pagination test).
+
+Changes:
+- `server.mjs:11-13` — the GET branch reads `offset` (default 0) and `limit` from the query string and returns `items.slice(offset, offset + limit)`. When `limit` is absent it slices to the end, so a plain `GET /items` behaves exactly as before.
+- `test/api.test.mjs` — new subtest posts two more items, then requests `?limit=2&offset=1` and asserts the response equals slice(1, 3) of the full list with exactly 2 entries.
+
+Net diff: +19 lines across the two files, no new dependencies.
+
+--- stderr ---

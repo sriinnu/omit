@@ -1,0 +1,8 @@
+Done — all 4 tests pass, including the new pagination test.
+
+What changed:
+
+- `server.mjs` — `GET /items` now reads `limit` and `offset` query parameters. Omitted parameters default to no offset and no limit, so plain `GET /items` behaves exactly as before. Values that aren't non-negative integers (e.g. `limit=-1` or `limit=abc`) return a `400` with a JSON error; both are validated by a small `parsePagingParam` helper, and the result is sliced with `items.slice(offset, offset + limit)`.
+- `test/api.test.mjs` — added a subtest that seeds extra items, then verifies `limit`+`offset` together, `limit` alone, `offset` alone, an offset past the end (returns `[]`), and that an invalid `limit` returns 400.
+
+--- stderr ---

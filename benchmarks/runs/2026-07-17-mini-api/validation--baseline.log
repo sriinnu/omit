@@ -1,0 +1,9 @@
+Done — validation is in place and all 10 tests pass (the 2 existing ones plus 8 new subtests).
+
+**`server.mjs`** — the POST /items handler now rejects invalid input with HTTP 400 and a JSON `{ error: "..." }` body before creating the item:
+- `name` must be a string that isn't empty or whitespace-only.
+- `price` must be a number that is not NaN and not negative (`0` is allowed; `typeof` already excludes strings and missing values).
+
+**`test/api.test.mjs`** — added subtests covering missing/empty/non-string name, missing/negative/non-number price, and one positive case confirming `price: 0` is still accepted with 201. Verified with `node --test`: 10 pass, 0 fail.
+
+--- stderr ---

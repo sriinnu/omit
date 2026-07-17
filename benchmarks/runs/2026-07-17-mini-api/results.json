@@ -1,0 +1,74 @@
+[
+  {
+    "task": "pagination",
+    "arm": "baseline",
+    "added": 43,
+    "deleted": 1,
+    "net": 42,
+    "newDeps": [],
+    "hazards": 0,
+    "testPass": true,
+    "durationMs": 50433,
+    "dir": "C:\\Users\\S36EA~1.PEN\\AppData\\Local\\Temp\\omit-bench-J3bX3i"
+  },
+  {
+    "task": "pagination",
+    "arm": "omit",
+    "added": 19,
+    "deleted": 1,
+    "net": 18,
+    "newDeps": [],
+    "hazards": 0,
+    "testPass": true,
+    "durationMs": 49115,
+    "dir": "C:\\Users\\S36EA~1.PEN\\AppData\\Local\\Temp\\omit-bench-toU786"
+  },
+  {
+    "task": "pagination",
+    "arm": "ponytail",
+    "added": 22,
+    "deleted": 1,
+    "net": 21,
+    "newDeps": [],
+    "hazards": 0,
+    "testPass": true,
+    "durationMs": 42610,
+    "dir": "C:\\Users\\S36EA~1.PEN\\AppData\\Local\\Temp\\omit-bench-7rKyOm"
+  },
+  {
+    "task": "validation",
+    "arm": "baseline",
+    "added": 82,
+    "deleted": 0,
+    "net": 82,
+    "newDeps": [],
+    "hazards": 0,
+    "testPass": true,
+    "durationMs": 46059,
+    "dir": "C:\\Users\\S36EA~1.PEN\\AppData\\Local\\Temp\\omit-bench-trhTj9"
+  },
+  {
+    "task": "validation",
+    "arm": "omit",
+    "added": 33,
+    "deleted": 0,
+    "net": 33,
+    "newDeps": [],
+    "hazards": 0,
+    "testPass": true,
+    "durationMs": 41430,
+    "dir": "C:\\Users\\S36EA~1.PEN\\AppData\\Local\\Temp\\omit-bench-KpRgoV"
+  },
+  {
+    "task": "validation",
+    "arm": "ponytail",
+    "added": 35,
+    "deleted": 0,
+    "net": 35,
+    "newDeps": [],
+    "hazards": 0,
+    "testPass": true,
+    "durationMs": 34075,
+    "dir": "C:\\Users\\S36EA~1.PEN\\AppData\\Local\\Temp\\omit-bench-jloGmM"
+  }
+]
