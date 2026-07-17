@@ -1,11 +1,12 @@
 {
   "name": "omit",
-  "version": "0.1.0",
-  "description": "Omit needless code. Editorial discipline for AI coding agents: draft less, cite everything, cut last.",
+  "version": "0.2.0",
+  "description": "Omit needless code. Editorial discipline for AI coding agents: draft less, cite everything, cut last: enforced by hooks, not just asked for.",
   "author": {
     "name": "omit contributors"
   },
   "homepage": "https://github.com/sriinnu/omit",
   "license": "MIT",
-  "keywords": ["minimalism", "code-quality", "skill", "editorial", "less-code"]
+  "keywords": ["minimalism", "code-quality", "skill", "editorial", "less-code", "hooks", "secrets", "security"],
+  "hooks": "./hooks/hooks.json"
 }

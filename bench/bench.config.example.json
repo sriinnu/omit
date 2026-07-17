@@ -1,0 +1,18 @@
+{
+  "agentCmd": "claude",
+  "agentArgs": ["-p", "{prompt}", "--dangerously-skip-permissions"],
+  "timeoutMinutes": 20,
+  "arms": [
+    { "name": "baseline" },
+    { "name": "omit", "rules": "./AGENTS.md" },
+    { "name": "other-skill", "rules": "../some-other-skill/AGENTS.md" }
+  ],
+  "tasks": [
+    {
+      "id": "add-pagination",
+      "repo": "../fixtures/fastapi-app",
+      "prompt": "Add cursor-based pagination to the /items endpoint. Existing tests must keep passing.",
+      "testCmd": "python -m pytest -q"
+    }
+  ]
+}

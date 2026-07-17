@@ -1,0 +1,26 @@
+name: omit audit
+description: Comment the omit verdict (net diff, new deps, hazards, score) on pull requests: works whatever agent or editor wrote the code.
+branding:
+  icon: scissors
+  color: gray-dark
+inputs:
+  base:
+    description: Base ref to diff against
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Run omit audit
+      shell: bash
+      run: |
+        BASE="${{ inputs.base }}"
+        if [ -z "$BASE" ]; then BASE="origin/${{ github.event.pull_request.base.ref }}"; fi
+        git fetch --depth=1 origin "${{ github.event.pull_request.base.ref }}" || true
+        node "${{ github.action_path }}/bin/omit.mjs" audit --base "$BASE" --markdown > omit-verdict.md
+        cat omit-verdict.md
+    - name: Comment on PR
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: gh pr comment ${{ github.event.pull_request.number }} --body-file omit-verdict.md --repo ${{ github.repository }}

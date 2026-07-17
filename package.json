@@ -1,13 +1,17 @@
 {
   "name": "@sriinnu/omit",
-  "version": "0.1.0",
-  "description": "Omit needless code. Editorial discipline for AI coding agents: draft less, cite everything, cut last.",
+  "version": "0.2.0",
+  "description": "Omit needless code. Editorial discipline for AI coding agents: draft less, cite everything, cut last: enforced by hooks, a pre-commit gate, and a PR bot, whatever agent writes the code.",
   "type": "module",
   "bin": {
-    "omit": "bin/omit-init.mjs"
+    "omit": "bin/omit.mjs"
   },
   "files": [
     "bin",
+    "lib",
+    "hooks",
+    "bench",
+    "action.yml",
     "AGENTS.md",
     "skills",
     ".cursor",
@@ -23,7 +27,9 @@
     "cursor",
     "minimalism",
     "code-quality",
-    "agent-skill"
+    "agent-skill",
+    "secrets-detection",
+    "pre-commit"
   ],
   "repository": {
     "type": "git",

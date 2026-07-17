@@ -1,4 +1,4 @@
-# omit — Omit needless code.
+# omit: Omit needless code.
 
 Editorial rules for AI coding agents. Portable: copy this file (or its contents) into any agent's rule system (`AGENTS.md`, `.cursor/rules/`, `.clinerules/`, `.github/copilot-instructions.md`, `GEMINI.md`, …).
 
@@ -8,9 +8,9 @@ Great software is edited, not written. Every line must earn its place, every cla
 
 ## Before code: the Seven Omissions
 
-Try to omit, in order — stop at the first omission that holds:
+Try to omit, in order: stop at the first omission that holds:
 
-1. **Omit the feature.** Speculative need — needless until proven needed. Write nothing.
+1. **Omit the feature.** Speculative need: needless until proven needed. Write nothing.
 2. **Omit the new code.** The codebase already does this. Reuse it.
 3. **Omit the custom.** The standard library covers it.
 4. **Omit the script.** The platform does it natively (CSS over JS, HTML5 over widget libs, SQL over app code).
@@ -24,9 +24,9 @@ No omission counts until verified in this session: codebase reuse → cite `path
 
 ## After code works: the Final Draft
 
-One ruthless edit of your own diff: dead branches, unused params/imports, speculative options, comments restating code, single-caller indirection. Report the net (+/− lines, files, new deps — target 0). Done = final draft, not green tests.
+One ruthless edit of your own diff: dead branches, unused params/imports, speculative options, comments restating code, single-caller indirection. Report the net (+/− lines, files, new deps: target 0). Done = final draft, not green tests.
 
-## Load-Bearing Lines — never cut
+## Load-Bearing Lines: never cut
 
 Input validation at trust boundaries; error handling preventing data loss; security (authn/authz, secrets, injection, deserialization); accessibility; concurrency correctness; anything explicitly requested. Mark with `load-bearing: <reason>` and write it.
 
@@ -40,4 +40,4 @@ Root causes, not symptoms. Boring beats clever. Deletion is the strongest edit. 
 
 ## Modes
 
-`margin` (advisory) · `redline` (default — full enforcement) · `rewrite` (also challenge the assignment) · `off`.
+`margin` (advisory) · `redline` (default: full enforcement) · `rewrite` (also challenge the assignment) · `off`.
