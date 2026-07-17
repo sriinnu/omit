@@ -24,11 +24,46 @@ jobs:
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           PKG_VERSION="$(node -p "require('./package.json').version")"
+          PKG_NAME="$(node -p "require('./package.json').name")"
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "Tag v$TAG_VERSION does not match package.json version $PKG_VERSION"
             exit 1
           fi
+          echo "PKG_NAME=$PKG_NAME" >> "$GITHUB_ENV"
+          echo "PKG_VERSION=$PKG_VERSION" >> "$GITHUB_ENV"
 
-      - run: npm publish --access public --provenance
+      - name: Skip if already published
+        id: check
+        run: |
+          if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "Already on the registry, nothing to do."
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.check.outputs.already_published == 'false'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if npm publish --access public --provenance; then
+            echo "Publish succeeded."
+            exit 0
+          fi
+
+          # npm's registry can 404 a fresh scoped package's first publish for a
+          # few seconds after the write actually lands (read-replica lag), which
+          # makes npm publish report failure even though the version is live.
+          # Poll before trusting the error.
+          echo "npm publish reported failure; checking whether it landed anyway..."
+          for i in $(seq 1 10); do
+            sleep 6
+            if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+              echo "Version $PKG_VERSION is live on the registry — treating as success."
+              exit 0
+            fi
+          done
+
+          echo "Version never appeared on the registry after retries. Publish failed."
+          exit 1
