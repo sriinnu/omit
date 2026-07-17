@@ -20,7 +20,7 @@ That gives you a global `omit` command everywhere: `omit init cursor`, `omit aud
 /plugin install omit@omit
 ```
 
-Restart the session. You now have the skill, the `/omit` and `/omit-edit` commands, and four live hooks: the dep sentinel, the hazard sentinel (secrets and injections), the lint sentinel, and the Final Draft gate.
+Restart the session. You now have the skill, the `/omit` and `/omit-edit` commands, and five live hooks: the command sentinel (blocks `rm -rf ~` class disasters before they run), the dep sentinel, the hazard sentinel (secrets and injections), the lint sentinel, and the Final Draft gate.
 
 Try it: ask for "add lodash to dedupe an array" and watch the agent get objected into `[...new Set(arr)]`. Escape hatch when you need it: set `OMIT_OFF=1`.
 

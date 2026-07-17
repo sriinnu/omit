@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { isManifest, addedDeps } from '../lib/deps.mjs'
 import { findHazards } from '../lib/hazards.mjs'
 import { lintFiles } from '../lib/lint.mjs'
+import { assessCommand } from '../lib/danger.mjs'
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const git = (args) => execSync(`git ${args}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
@@ -173,6 +174,21 @@ function lint(files) {
   process.exit(results.some((r) => !r.ok) ? 1 : 0)
 }
 
+function guard(args) {
+  const command = args.join(' ')
+  if (!command) {
+    console.error('usage: omit guard "<shell command>"')
+    process.exit(1)
+  }
+  const findings = assessCommand(command)
+  if (findings.length === 0) {
+    console.log('ok')
+    return
+  }
+  for (const f of findings) console.error(`[${f.rule}] ${f.reason}`)
+  process.exit(1)
+}
+
 function hookInstall() {
   const hookPath = join('.git', 'hooks', 'pre-commit')
   if (!existsSync('.git')) {
@@ -199,10 +215,11 @@ if (cmd === 'audit') audit(rest)
 else if (cmd === 'gate') gate()
 else if (cmd === 'check') check(rest)
 else if (cmd === 'lint') lint(rest)
+else if (cmd === 'guard') guard(rest)
 else if (cmd === 'hook' && rest[0] === 'install') hookInstall()
 else if (cmd === 'init') init(rest[0])
 else if (targets[cmd]) init(cmd) // back-compat: `omit cursor`
 else {
-  console.error('usage: omit <init|audit|check|gate|lint|hook install>')
+  console.error('usage: omit <init|audit|check|gate|lint|guard|hook install>')
   process.exit(cmd ? 1 : 0)
 }

@@ -40,6 +40,7 @@ Every other skill in this genre is words the agent can ignore under context pres
 
 | Mechanism | What it does |
 |---|---|
+| **Command sentinel** (hook) | Inspects every shell command BEFORE it runs and blocks the classic agent disasters: `rm -rf ~`, recursive deletes of system/drive roots, deletes through unset variables (`rm -rf $OUT/*` with `$OUT` empty), `dd` to block devices, `mkfs`, fork bombs. The user's machine is load-bearing. |
 | **Dep sentinel** (hook) | A new dependency hits a manifest with no receipt in `.omit/receipts.jsonl` → the edit is objected to on the spot. Cite why omissions 2-5 failed, or revert. |
 | **Hazard sentinel** (hook) | Hardcoded API keys/secrets and injection-prone patterns (string-built SQL, `eval`, shell concatenation, `innerHTML`, unsafe deserialization) are blocked the moment they land in a file. Secrets have no override; injection lines need a reviewed `omit-allow: <reason>`. |
 | **Lint sentinel** (hook) | omit ships no lint rules. It detects the linter the repo already configured (eslint, biome, ruff, flake8) and runs it on every edited file, so the agent hears objections immediately instead of at CI time. |
@@ -58,6 +59,7 @@ npx @sriinnu/omit hook install   # git pre-commit: audits the staged diff,
 npx @sriinnu/omit audit          # net diff, new deps, hazards, omit score
 npx @sriinnu/omit check <files>  # hazard-scan specific files (wire into any hook system)
 npx @sriinnu/omit lint [files]   # run the repo's OWN linter on changed files
+npx @sriinnu/omit guard "<cmd>"  # is this shell command a disaster? (wire into any hook system)
 npx @sriinnu/omit gate           # the pre-commit check, callable from anywhere
 ```
 

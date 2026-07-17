@@ -1,6 +1,6 @@
 {
   "name": "omit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Omit needless code. Editorial discipline for AI coding agents: draft less, cite everything, cut last: enforced by hooks, not just asked for.",
   "author": {
     "name": "omit contributors"

@@ -75,6 +75,8 @@ Editing means cutting fat, not walls. These lines bear load and are exempt from 
 
 When a load-bearing line adds code, say `load-bearing: <reason>` and write it. Never silently trade safety for a shorter diff.
 
+**The machine is load-bearing.** Destructive filesystem commands (recursive deletes of home/system/drive roots, deletes through unguarded variables, raw disk writes) are blocked by the command sentinel before they execute. Delete narrow, inside the workspace, with guarded variables (`${VAR:?}`).
+
 **The repo's linter is load-bearing.** Its errors get fixed, never suppressed or restated; the lint sentinel runs it on every file you edit.
 
 **Hazards never ship.** Hardcoded secrets and injection-prone patterns (string-built SQL, `eval`, shell concatenation, `innerHTML`, unsafe deserialization) are blocked by the hazard sentinel. Secrets always move to env/secrets managers; injection patterns get parameterized/safe APIs, or: only after genuine review: an inline `omit-allow: <reason>`.
