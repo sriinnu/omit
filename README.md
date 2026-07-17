@@ -111,6 +111,13 @@ New here? **[GETTING-STARTED.md](GETTING-STARTED.md)** has a copy-paste setup fo
 /plugin install omit@omit
 ```
 
+**Global command**: install once from GitHub, use everywhere:
+
+```
+npm install -g github:sriinnu/omit
+omit init cursor        # or: omit audit / omit gate / omit hook install
+```
+
 **npm / npx**: drops the right rule file into the current repo (never overwrites existing files):
 
 ```

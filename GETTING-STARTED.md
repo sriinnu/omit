@@ -5,7 +5,13 @@ omit works two ways, and the best setups use both:
 1. **Rule file / skill**: your agent adopts the editorial discipline (Seven Omissions, Fact-Check, Final Draft, Load-Bearing Lines).
 2. **Enforcement**: hooks, a git pre-commit gate, and a PR bot that block secrets, injection patterns, uncited dependencies, and lint failures no matter what wrote the code.
 
-> Not on npm yet? Replace `npx @sriinnu/omit` below with `node <path-to-cloned-repo>/bin/omit.mjs` after `git clone https://github.com/sriinnu/omit`.
+## The one-time setup
+
+```
+npm install -g github:sriinnu/omit
+```
+
+That gives you a global `omit` command everywhere: `omit init cursor`, `omit audit`, `omit gate`. Prefer not to install? One-off runs work too: `npx github:sriinnu/omit init cursor`. Every `npx @sriinnu/omit ...` below can be written as plain `omit ...` once globally installed.
 
 ## Claude Code (full experience: discipline + live hooks)
 
