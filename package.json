@@ -1,0 +1,33 @@
+{
+  "name": "@sriinnu/omit",
+  "version": "0.1.0",
+  "description": "Omit needless code. Editorial discipline for AI coding agents: draft less, cite everything, cut last.",
+  "type": "module",
+  "bin": {
+    "omit": "bin/omit-init.mjs"
+  },
+  "files": [
+    "bin",
+    "AGENTS.md",
+    "skills",
+    ".cursor",
+    ".clinerules",
+    ".windsurf",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "claude-code",
+    "cursor",
+    "minimalism",
+    "code-quality",
+    "agent-skill"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sriinnu/omit.git"
+  },
+  "license": "MIT"
+}

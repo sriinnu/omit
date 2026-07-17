@@ -1,0 +1,13 @@
+{
+  "name": "omit",
+  "owner": {
+    "name": "sriinnu"
+  },
+  "plugins": [
+    {
+      "name": "omit",
+      "source": "./",
+      "description": "Omit needless code. Editorial discipline for AI coding agents: draft less, cite everything, cut last."
+    }
+  ]
+}

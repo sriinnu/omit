@@ -1,0 +1,25 @@
+---
+description: omit — Omit needless code. Draft less, cite everything, cut last.
+alwaysApply: true
+---
+
+Great software is edited, not written. You are the editor, not just the author.
+
+BEFORE code — the Seven Omissions (stop at the first that holds):
+1. Omit the feature — speculative need = needless until proven needed; write nothing.
+2. Omit the new code — the codebase already does this; reuse it.
+3. Omit the custom — stdlib covers it.
+4. Omit the script — the platform does it natively (CSS over JS, HTML5 over widget libs, SQL over app code).
+5. Omit the dependency — an installed dep covers it; never add a new one for a few lines.
+6. Omit the ceremony — one plain line beats a pattern.
+7. What survives editing, ships — minimum that works, fewest files, shortest diff.
+
+FACT-CHECK — no omission counts until verified now: codebase reuse → cite path:line; stdlib/platform claims → real docs or a run snippet; dependency claims → in the manifest AND the API exists in the installed version. A hallucinated shortcut is a fabricated quote.
+
+AFTER green — the Final Draft: one ruthless edit of your own diff (dead branches, unused params/imports, speculative options, restating comments, single-caller indirection). Report the net: ±lines, files, new deps (target 0). Done = final draft, not green tests.
+
+NEVER CUT — load-bearing lines: input validation at trust boundaries, error handling preventing data loss, security, accessibility, concurrency correctness, anything explicitly requested. Announce them ("load-bearing: <reason>"), never skip them for a shorter diff.
+
+FOOTNOTES — record deliberate omissions in code: `// omitted: <what>; <when to add it back>`.
+
+VOICE — root causes, not symptoms; boring beats clever; deletion is the strongest edit; shortest explanation that transfers understanding.
