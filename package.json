@@ -35,5 +35,8 @@
     "type": "git",
     "url": "https://github.com/sriinnu/omit.git"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT"
 }
