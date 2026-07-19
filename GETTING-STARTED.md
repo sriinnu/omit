@@ -20,7 +20,7 @@ That gives you a global `omit` command everywhere: `omit init cursor`, `omit aud
 /plugin install omit@omit
 ```
 
-Restart the session. You now have the skill, the `/omit` and `/omit-edit` commands, and five live hooks: the command sentinel (blocks `rm -rf ~` class disasters before they run), the dep sentinel, the hazard sentinel (secrets and injections), the lint sentinel, and the Final Draft gate.
+Restart the session. You now have the skill, the `/omit` and `/omit-edit` commands, and six live hooks: the command sentinel (blocks `rm -rf ~` class disasters before they run), the leak sentinel (blocks commands that would print a real secret into the transcript), the dep sentinel, the hazard sentinel (secrets and injections), the lint sentinel, and the Final Draft gate.
 
 Try it: ask for "add lodash to dedupe an array" and watch the agent get objected into `[...new Set(arr)]`. Escape hatch when you need it: set `OMIT_OFF=1`.
 
@@ -41,6 +41,14 @@ npx @sriinnu/omit init codex
 ```
 
 Drops `AGENTS.md`, which Codex reads natively. If the repo already has an `AGENTS.md`, the command skips it; append the contents of ours instead.
+
+For live hooks (not just the discipline), Codex CLI has its own hooks system with the same shape as Claude Code's:
+
+```
+npx @sriinnu/omit hook install codex
+```
+
+Writes `.codex/hooks.json` pointing at this install's hook scripts. The command sentinel and leak sentinel are verified against Codex's documented schema — Codex's own docs show `PreToolUse` firing with `tool_input.command` for Bash, same as Claude Code, and both hook scripts were tested directly against that exact payload shape — though not yet against a live Codex session actually firing them end-to-end. The dep/hazard/lint sentinels and the Final Draft gate are wired to `apply_patch|Edit|Write` too, but Codex's `apply_patch` tool input shape for those hasn't been verified here; they no-op safely if the field they expect isn't present, so worst case is reduced coverage, not a false pass. Codex requires trusting new hook definitions once per session — run `/hooks` in a Codex session to review them.
 
 ## Takumi
 

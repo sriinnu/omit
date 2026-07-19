@@ -43,15 +43,16 @@ Every other skill in this genre is words the agent can ignore under context pres
 | **Command sentinel** (hook) | Inspects every shell command BEFORE it runs and blocks the classic agent disasters: `rm -rf ~`, recursive deletes of system/drive roots, deletes through unset variables (`rm -rf $OUT/*` with `$OUT` empty), `dd` to block devices, `mkfs`, fork bombs. The user's machine is load-bearing. |
 | **Dep sentinel** (hook) | A new dependency hits a manifest with no receipt in `.omit/receipts.jsonl` → the edit is objected to on the spot. Cite why omissions 2-5 failed, or revert. |
 | **Hazard sentinel** (hook) | Hardcoded API keys/secrets and injection-prone patterns (string-built SQL, `eval`, shell concatenation, `innerHTML`, unsafe deserialization) are blocked the moment they land in a file. Secrets have no override; injection lines need a reviewed `omit-allow: <reason>`. |
+| **Leak sentinel** (hook) | Blocks shell commands that print an *existing* secret's raw value to stdout before they run, or a live key typed straight into the command line: macOS Keychain, Linux `secret-tool`/`pass`/`gpg -d`, 1Password/Vault/AWS/GCP/Azure/kubectl secret CLIs, bare `env`/`printenv`, `env \| grep`-ing a KEY/TOKEN/SECRET/connection-string var, or `cat`-ing a `.env`/`credentials`/`*.pem`/`id_rsa` file. Redirecting to a real file or piping into a non-printing sink (clipboard, `--password-stdin`) is recognized as safe — the goal is keeping secrets out of the transcript, not off disk. Adversarially reviewed (3 lenses, every finding re-verified by execution, not inspection) before shipping — one known gap stays undetected on purpose rather than chasing a fragile fix: a `for`/`do`/`done > file` loop's trailing redirect isn't attributed back to the loop body. The agent's own transcript is not a safe place for a real key. |
 | **Lint sentinel** (hook) | omit ships no lint rules. It detects the linter the repo already configured (eslint, biome, ruff, flake8) and runs it on every edited file, so the agent hears objections immediately instead of at CI time. |
 | **Final Draft gate** (hook) | The session cannot end with an edited tree and no `.omit/final-draft.md` net report. The deletion pass is a gate, not a suggestion. |
 | **Receipts ledger** | Every Fact-Check citation is appended to `.omit/receipts.jsonl`: an auditable trail of the agent's claims your reviewers can actually read. |
 
-Hooks install automatically with the Claude Code plugin. Escape hatch for humans: `OMIT_OFF=1`.
+Hooks install automatically with the Claude Code plugin. Codex CLI has its own hooks system in the same shape (`PreToolUse` fires with `tool_input.command` for Bash, exit 2 blocks) — run `npx @sriinnu/omit hook install codex` to write `.codex/hooks.json`. The command and leak sentinels are verified against Codex's documented schema and payload shape (not yet a live Codex session firing them end-to-end); the file-based sentinels (dep/hazard/lint) and the Final Draft gate are wired too but best-effort, since Codex's `apply_patch` input shape for those isn't verified. Escape hatch for humans: `OMIT_OFF=1`.
 
 ## Any provider, same gates
 
-The enforcement logic lives in a zero-dependency CLI, not in any one vendor's hook system: Claude Code's hooks are just thin adapters over it. For Cursor, Codex, Copilot, or anything else, enforce at the two chokepoints every agent passes through:
+The enforcement logic lives in a zero-dependency CLI, not in any one vendor's hook system: Claude Code's and Codex's hooks are both just thin adapters over it. For Cursor, Copilot, or anything else, enforce at the two chokepoints every agent passes through:
 
 ```
 npx @sriinnu/omit hook install   # git pre-commit: audits the staged diff,
@@ -60,7 +61,9 @@ npx @sriinnu/omit audit          # net diff, new deps, hazards, omit score
 npx @sriinnu/omit check <files>  # hazard-scan specific files (wire into any hook system)
 npx @sriinnu/omit lint [files]   # run the repo's OWN linter on changed files
 npx @sriinnu/omit guard "<cmd>"  # is this shell command a disaster? (wire into any hook system)
+npx @sriinnu/omit leak "<cmd>"   # would this command print a real secret to stdout?
 npx @sriinnu/omit gate           # the pre-commit check, callable from anywhere
+npx @sriinnu/omit hook install codex  # write .codex/hooks.json — live sentinels inside Codex CLI
 ```
 
 And server-side, the GitHub Action comments the verdict on every PR regardless of what wrote the code:

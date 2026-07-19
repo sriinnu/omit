@@ -6,6 +6,9 @@
   "bin": {
     "omit": "bin/omit.mjs"
   },
+  "scripts": {
+    "test": "node --test"
+  },
   "files": [
     "bin",
     "lib",

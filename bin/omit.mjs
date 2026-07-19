@@ -6,7 +6,9 @@
 //   omit audit [--base <ref>] [--json|--markdown]         net diff, new deps, hazards, score
 //   omit check <file...>                                  hazard-scan specific files
 //   omit gate                                             audit the staged diff; fail on hazards/uncited deps
+//   omit leak "<cmd>"                                     would this command print a real secret to stdout?
 //   omit hook install                                     add the gate to .git/hooks/pre-commit
+//   omit hook install codex                                write .codex/hooks.json (live sentinels inside Codex CLI)
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { basename, dirname, join } from 'node:path'
@@ -15,6 +17,7 @@ import { isManifest, addedDeps } from '../lib/deps.mjs'
 import { findHazards } from '../lib/hazards.mjs'
 import { lintFiles } from '../lib/lint.mjs'
 import { assessCommand } from '../lib/danger.mjs'
+import { assessLeak } from '../lib/leaks.mjs'
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const git = (args) => execSync(`git ${args}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
@@ -189,6 +192,76 @@ function guard(args) {
   process.exit(1)
 }
 
+function leak(args) {
+  const command = args.join(' ')
+  if (!command) {
+    console.error('usage: omit leak "<shell command>"')
+    process.exit(1)
+  }
+  const findings = assessLeak(command)
+  if (findings.length === 0) {
+    console.log('ok')
+    return
+  }
+  for (const f of findings) console.error(`[${f.rule}] ${f.reason}`)
+  process.exit(1)
+}
+
+// Codex CLI's hook schema is the same shape as Claude Code's (confirmed against
+// developers.openai.com/codex/hooks: PreToolUse fires with tool_input.command for
+// Bash, exit 2 blocks). Command-sentinel and leak-sentinel run on that shape as-is.
+// The PostToolUse file hooks (dep/hazard/lint-sentinel) and the Stop gate are wired
+// too since Codex documents the same events, but Codex's apply_patch tool_input
+// shape for PostToolUse isn't confirmed here — those three no-op safely if the
+// file_path field isn't present, so this is best-effort, not verified parity.
+function hookInstallCodex() {
+  const dir = '.codex'
+  const hooksPath = join(dir, 'hooks.json')
+  mkdirSync(dir, { recursive: true })
+
+  let doc = { hooks: {} }
+  if (existsSync(hooksPath)) {
+    try {
+      doc = JSON.parse(readFileSync(hooksPath, 'utf8'))
+    } catch {
+      console.error(`omit: ${hooksPath} exists but isn't valid JSON — fix or remove it first`)
+      process.exit(1)
+    }
+  }
+  doc.hooks ??= {}
+  for (const [event, entry] of Object.entries(doc.hooks)) {
+    if (entry !== undefined && !Array.isArray(entry)) {
+      console.error(`omit: ${hooksPath} has a malformed "${event}" entry (expected an array of matcher groups) — fix or remove it first`)
+      process.exit(1)
+    }
+  }
+
+  const scriptCmd = (script) => `node "${join(pkgRoot, 'hooks', script)}"`
+  const mergeHook = (event, matcher, script) => {
+    doc.hooks[event] ??= []
+    let group = doc.hooks[event].find((g) => g.matcher === matcher)
+    if (!group) {
+      group = { matcher, hooks: [] }
+      doc.hooks[event].push(group)
+    }
+    const command = scriptCmd(script)
+    if (!group.hooks.some((h) => h.command === command)) group.hooks.push({ type: 'command', command })
+  }
+
+  mergeHook('PreToolUse', 'Bash', 'command-sentinel.mjs')
+  mergeHook('PreToolUse', 'Bash', 'leak-sentinel.mjs')
+  mergeHook('PostToolUse', 'apply_patch|Edit|Write', 'dep-sentinel.mjs')
+  mergeHook('PostToolUse', 'apply_patch|Edit|Write', 'hazard-sentinel.mjs')
+  mergeHook('PostToolUse', 'apply_patch|Edit|Write', 'lint-sentinel.mjs')
+  mergeHook('Stop', '', 'final-draft-gate.mjs')
+
+  writeFileSync(hooksPath, JSON.stringify(doc, null, 2) + '\n')
+  console.log(`wrote ${hooksPath}`)
+  console.log('  verified against Codex\'s documented schema: command sentinel + leak sentinel run on Bash commands (same tool_input.command shape as Claude Code)')
+  console.log('  best-effort, unverified: dep/hazard/lint sentinels + Final Draft gate on apply_patch/Edit/Write — they no-op safely if the field shape differs, report back if you see them miss real edits')
+  console.log('\nCodex requires trusting new hook definitions once per session: run `/hooks` in Codex to review, or start with --dangerously-bypass-hook-trust for unattended runs.')
+}
+
 function hookInstall() {
   const hookPath = join('.git', 'hooks', 'pre-commit')
   if (!existsSync('.git')) {
@@ -216,10 +289,16 @@ else if (cmd === 'gate') gate()
 else if (cmd === 'check') check(rest)
 else if (cmd === 'lint') lint(rest)
 else if (cmd === 'guard') guard(rest)
-else if (cmd === 'hook' && rest[0] === 'install') hookInstall()
+else if (cmd === 'leak') leak(rest)
+else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === 'codex') hookInstallCodex()
+else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === undefined) hookInstall()
+else if (cmd === 'hook' && rest[0] === 'install') {
+  console.error(`omit: unrecognized 'hook install' target '${rest[1]}' — usage: omit hook install [codex]`)
+  process.exit(1)
+}
 else if (cmd === 'init') init(rest[0])
 else if (targets[cmd]) init(cmd) // back-compat: `omit cursor`
 else {
-  console.error('usage: omit <init|audit|check|gate|lint|guard|hook install>')
+  console.error('usage: omit <init|audit|check|gate|lint|guard|leak|hook install|hook install codex>')
   process.exit(cmd ? 1 : 0)
 }
