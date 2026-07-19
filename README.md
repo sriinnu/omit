@@ -165,10 +165,6 @@ skills/omit/SKILL.md  →  .claude/skills/omit/SKILL.md      (project)
 - `/omit [margin|redline|rewrite|off]`: switch or show the current mode
 - `/omit-edit`: run an editor's pass over the current diff: flag bloat, uncited claims, missing footnotes, and cut opportunities
 
-## Benchmarks
-
-None yet: and we won't publish numbers we can't hand you the harness for. `benchmarks/METHODOLOGY.md` defines the measurement we consider honest (paired tasks, agentic baseline, net LOC / new deps / defect rate / load-bearing violations, full transcripts). Reproducible runs are the most welcome PR this repo can receive.
-
 ## Prior art
 
 The minimalism-pressure idea was popularized by [ponytail](https://github.com/DietrichGebert/ponytail), which deserves its stars. `omit` differs where it matters: shortcuts require citations, the diff is edited *after* it works, safety lines are enumerated and never cut, and what's left out is footnoted instead of silent.
