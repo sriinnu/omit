@@ -1,6 +1,6 @@
 {
   "name": "@sriinnu/omit",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Omit needless code. Editorial discipline for AI coding agents: draft less, cite everything, cut last: enforced by hooks, a pre-commit gate, and a PR bot, whatever agent writes the code.",
   "type": "module",
   "bin": {
