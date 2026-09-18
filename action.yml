@@ -1,5 +1,5 @@
 name: omit audit
-description: Comment the omit verdict (net diff, new deps, hazards, score) on pull requests: works whatever agent or editor wrote the code.
+description: Comment the omit verdict (net diff, new deps, hazards, lint) on pull requests — works whatever agent or editor wrote the code.
 branding:
   icon: scissors
   color: gray-dark
@@ -8,11 +8,28 @@ inputs:
     description: Base ref to diff against
     required: false
     default: ''
+  exec:
+    description: >
+      Execute the `run` snippets in .omit/receipts.jsonl to fully verify them.
+      Off by default: a PR's receipts are untrusted code, and this action runs on
+      pull requests. Turn it on for repos whose PRs you already run code from.
+      Also gates the repo's own linter, which a PR's config file can make
+      arbitrary: with exec off, the verdict reports the linter as not run.
+    required: false
+    default: 'false'
 runs:
   using: composite
   steps:
     - name: Run omit audit
       shell: bash
+      env:
+        # Inverted on purpose. The obvious `exec == 'true' && '' || '1'` never
+        # enables anything: '' is falsy in an expression, so the `&&` yields
+        # false and the `||` always takes '1'. Here the value being truth-tested
+        # is '1', which is never ambiguous, and the enabled branch yields '0' —
+        # an explicit off-value for OMIT_NO_EXEC, so the input can never mean
+        # "maybe". Anything that isn't exactly 'true' stays disabled.
+        OMIT_NO_EXEC: ${{ inputs.exec != 'true' && '1' || '0' }}
       run: |
         BASE="${{ inputs.base }}"
         if [ -z "$BASE" ]; then BASE="origin/${{ github.event.pull_request.base.ref }}"; fi

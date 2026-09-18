@@ -34,21 +34,26 @@ Before writing anything, try to omit. In order: stop at the first omission that 
 
 ## The Fact-Check
 
-An editor prints no uncited claim. Neither do you. Each omission must be verified **in this session**:
+An editor prints no uncited claim. Neither do you. Each omission must be verified **in this session**, and verified means *checkable by something other than you*.
 
-- "The codebase already does this" → open the file; cite `path:line`.
-- "Stdlib/platform covers it" → check the real docs or run a snippet proving the API exists and behaves as needed.
-- "The installed dep handles it" → confirm it's in the manifest AND the call you're making exists in the installed version.
+A citation only its author can read is a self-report. So every omission goes on the record in `.omit/receipts.jsonl`, one JSON object per line, naming its own evidence in a form a machine re-checks:
 
-No citation, no omission: move to the next question and keep editing. A hallucinated shortcut is a fabricated quote: it ships a bug with confidence.
+| Omission | Receipt | What gets checked |
+|---|---|---|
+| 2 · reuse the codebase | `{"claim":"reuse","rung":2,"file":"src/x.ts","line":42,"symbol":"parseRange"}` | the file, the line, and `symbol` within a few lines of it |
+| 3-4 · stdlib / platform | `{"claim":"stdlib","rung":3,"api":"crypto.randomUUID","run":["node","-e","crypto.randomUUID()"]}` | the snippet runs **and its argv names the API** |
+| 5 · installed dep | `{"claim":"installed-dep","rung":5,"dep":"zod","run":["node","-e","require('zod').object"]}` | a manifest declares the dep, the snippet names it, and it runs |
+| 7 · new dependency | `{"claim":"new-dep","rung":7,"dep":"left-pad","tried":[{"rung":2,"absent":"padTo"}]}` | each `tried` entry is re-checked — and must fail |
 
-**The receipts ledger.** Every citation goes on the record: append one JSON line to `.omit/receipts.jsonl` as you verify:
+Four things make it real:
 
-```json
-{"claim":"stdlib covers uuid","receipt":"node -e crypto.randomUUID() → ok","rung":3,"file":"src/id.ts"}
-```
+- **Evidence is bound to the claim.** A snippet's exit status proves nothing on its own: `["true"]` exits 0 and `["false"]` exits 1 while testing neither the standard library nor any dependency. So `run` must also name what it exercises (`api`, or the `dep`) and the argv must mention it. A snippet that exits on demand is not evidence.
+- **A `tried` entry cites a search, not a location.** Write the symbol you looked for and omit searches the whole tree for it. Citing a file that merely doesn't exist proves nothing — and it used to be the cheapest way to fake "I tried reuse".
+- **`run` is argv, not a shell string** — an array, so nothing expands and nothing is a second command hiding in an argument.
+- **A `new-dep` receipt is the strongest claim here**, because it asserts omissions 2-5 were tried and did not hold. If an entry holds, the receipt is refuted — the omission applies, so you do not add the dependency.
+- **No receipt, no omission.** Move to the next omission and keep editing.
 
-New dependencies REQUIRE a ledger entry before touching the manifest (the dep sentinel blocks otherwise): cite why omissions 2-5 failed.
+`omit verify` re-checks the whole ledger and passes only when every claim survived. `omit gate` refuses a new dependency cited by anything less than a verified receipt. A claim that does not survive re-checking is a fabricated citation: fix the receipt, or fix the code.
 
 ## The Final Draft
 
@@ -56,9 +61,16 @@ Working code is a first draft. After the change is verified (tests green or beha
 
 - Cut dead branches, unused params and imports, speculative options, comments that restate the code.
 - Collapse indirection with one caller and no second use in sight.
-- Report the net: files touched, lines added/removed, new dependencies (target: 0).
 
-Write that report to `.omit/final-draft.md`: the Stop gate will not let the session end with an edited tree and no current Final Draft.
+Then write the net report to `.omit/final-draft.md`. The stop gate **reads these three numbers out of it** and checks them against the tree, so state them in this shape:
+
+```
+files touched: <n>
+lines +<added> −<removed>
+new dependencies: <n>
+```
+
+Untracked files count toward all three, which means `git diff --stat` understates them. `omit audit` prints exactly these numbers — paste its verdict and they are right by construction. A report the gate cannot parse, or whose numbers the tree contradicts, ends the session blocked rather than accepted. The gate is on the report, not on the file existing.
 
 Done means final draft: not green tests.
 
@@ -79,7 +91,7 @@ When a load-bearing line adds code, say `load-bearing: <reason>` and write it. N
 
 **The repo's linter is load-bearing.** Its errors get fixed, never suppressed or restated; the lint sentinel runs it on every file you edit.
 
-**Hazards never ship.** Hardcoded secrets and injection-prone patterns (string-built SQL, `eval`, shell concatenation, `innerHTML`, unsafe deserialization) are blocked by the hazard sentinel. Secrets always move to env/secrets managers; injection patterns get parameterized/safe APIs, or: only after genuine review: an inline `omit-allow: <reason>`.
+**Hazards never ship.** Hardcoded secrets and injection-prone patterns (string-built SQL, `eval`, shell concatenation, `innerHTML`, unsafe deserialization) are blocked by the hazard sentinel. **Secrets have no override** — a key always moves to an environment variable or a secrets manager, and no marker waives that. Injection patterns get a parameterized query or a safe API; failing that, a trailing comment on that line carrying a real reason: `// omit-allow: <reason>`. That same trailing-comment-with-a-reason form is the only thing that waives the command and leak sentinels, and the reason is required: the bare token, a token inside a string literal, and a reason-less marker are all ignored.
 
 ## Footnote the omissions
 

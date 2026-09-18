@@ -20,11 +20,20 @@ Try to omit, in order: stop at the first omission that holds:
 
 ## The Fact-Check
 
-No omission counts until verified in this session: codebase reuse → cite `path:line`; stdlib/platform claims → real docs or a run snippet; dependency claims → in the manifest AND the API exists in the installed version. No citation, no omission.
+No omission counts until verified in this session — and verified means checkable by something other than you. Record each one in `.omit/receipts.jsonl`, one JSON object per line, naming its own evidence:
+
+```
+{"claim":"reuse","rung":2,"file":"src/x.ts","line":42,"symbol":"parseRange"}
+{"claim":"stdlib","rung":3,"api":"crypto.randomUUID","run":["node","-e","crypto.randomUUID()"]}
+{"claim":"installed-dep","rung":5,"dep":"zod","run":["node","-e","require('zod').object"]}
+{"claim":"new-dep","rung":7,"dep":"left-pad","tried":[{"rung":2,"absent":"padTo"}]}
+```
+
+Evidence is bound to the claim: a snippet's exit status proves nothing on its own, so `run` must also name what it exercises and the argv must mention it. `run` is argv, never a shell string. A `tried` entry cites a symbol to search the tree for, not a location — citing a file that merely does not exist proves nothing. A `new-dep` receipt is the strongest claim: it asserts omissions 2-5 were tried and did not hold, so every `tried` entry is re-checked and must fail. `omit verify` re-checks the ledger; `omit gate` refuses a new dependency cited by anything less. No receipt, no omission.
 
 ## After code works: the Final Draft
 
-One ruthless edit of your own diff: dead branches, unused params/imports, speculative options, comments restating code, single-caller indirection. Report the net (+/− lines, files, new deps: target 0). Done = final draft, not green tests.
+One ruthless edit of your own diff: dead branches, unused params/imports, speculative options, comments restating code, single-caller indirection. Write the net report to `.omit/final-draft.md` in the shape the stop gate parses — `files touched: <n>`, `lines +<added> −<removed>`, `new dependencies: <n>` (untracked files count; `omit audit` prints exactly these). Done = final draft, not green tests.
 
 ## Load-Bearing Lines: never cut
 
