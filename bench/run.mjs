@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isManifest, addedDeps } from '../lib/deps.mjs'
+import { fileAtRevision } from '../lib/git.mjs'
 import { findHazards } from '../lib/hazards.mjs'
 
 const configPath = process.argv[2]
@@ -51,7 +52,7 @@ for (const task of cfg.tasks) {
     const durationMs = Date.now() - t0
 
     // metrics vs the base commit
-    let added = 0, deleted = 0, newDeps = [], hazards = []
+    let added = 0, deleted = 0, newDeps = [], hazards = [], metricsError = null
     try {
       sh('git add -A', dir)
       for (const row of sh('git diff --cached --numstat', dir).split('\n').filter(Boolean)) {
@@ -59,11 +60,30 @@ for (const task of cfg.tasks) {
         if (a === '-') continue
         added += +a
         deleted += +d
-        if (isManifest(path)) newDeps.push(...addedDeps(basename(path), sh(`git diff --cached -- "${path}"`, dir)))
+        // Declared dependency sets across the two revisions, not diff lines:
+        // the arm's manifest is read the same whether the agent wrote it
+        // minified or pretty-printed.
+        if (isManifest(path)) {
+          let after = ''
+          try {
+            after = readFileSync(join(dir, path), 'utf8')
+          } catch {}
+          // Three outcomes, not string-or-null: "git could not answer" used to
+          // coalesce to '' and report every dependency the manifest declares as
+          // newly added — a measurement nobody made, in a file of measurements.
+          const before = fileAtRevision(dir, 'HEAD', path)
+          if (before.failed) throw new Error(`git could not read ${path} at HEAD: ${before.reason}`)
+          newDeps.push(...addedDeps(basename(path), before.present ? before.text : '', after))
+        }
       }
       const addedLines = sh('git diff --cached', dir).split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1))
       hazards = findHazards(addedLines)
-    } catch {}
+    } catch (e) {
+      // Swallowing this printed "deps +0 · hazards 0" for a run nothing measured.
+      // The harness keeps going (it is a referee, not a gate) but the run's
+      // record says which metrics are missing, and the summary counts the run.
+      metricsError = e.message
+    }
 
     let testPass = null
     if (task.testCmd) {
@@ -71,10 +91,11 @@ for (const task of cfg.tasks) {
       testPass = t.status === 0
     }
 
-    const rec = { task: task.id, arm: arm.name, added, deleted, net: added - deleted, newDeps, hazards: hazards.length, testPass, durationMs, dir }
+    const rec = { task: task.id, arm: arm.name, added, deleted, net: added - deleted, newDeps, hazards: hazards.length, testPass, durationMs, dir, ...(metricsError ? { metricsError } : {}) }
     results.push(rec)
     writeFileSync(join(benchRoot, `${task.id}--${arm.name}.log`), `${run.stdout ?? ''}\n--- stderr ---\n${run.stderr ?? ''}`)
     console.log(`   net ${rec.net >= 0 ? '+' : ''}${rec.net} · deps +${newDeps.length} · hazards ${rec.hazards} · tests ${testPass === null ? 'n/a' : testPass ? 'pass' : 'FAIL'} · ${(durationMs / 1000).toFixed(0)}s`)
+    if (metricsError) console.log(`   ⚠ metrics incomplete: ${metricsError}`)
   }
 }
 

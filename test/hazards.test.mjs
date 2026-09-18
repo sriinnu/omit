@@ -5,15 +5,33 @@ import { findHazards, SECRET_RULES } from '../lib/hazards.mjs'
 const secretRules = (lines) => findHazards(lines).filter((f) => f.type === 'secret').map((f) => f.rule)
 const injectionRules = (lines) => findHazards(lines).filter((f) => f.type === 'injection').map((f) => f.rule)
 
+// Key-shaped fixtures are assembled from fragments at runtime. Secrets have no
+// override (see the no-override test below), so a literal `AKIA…`/`ghp_…`
+// written into this file would — correctly — be flagged by hazard-sentinel and
+// block the repo's own commits: it scans the added lines of every file, this
+// one included. The suite obeys the rule it tests instead of being exempted
+// from it. Every assembled value still matches its rule; only the file text
+// stops containing a key-shaped string.
+const aws = 'AKIA' + 'ABCDEFGHIJKLMNOP'
+const privateKey = '-----BEGIN ' + 'RSA PRIVATE KEY-----'
+const github = 'ghp_' + 'abcdefghijklmnopqrstuvwxyz0123456789'
+const slack = 'xoxb-' + '1234567890-abcdefghij'
+const anthropic = 'sk-ant-' + 'api03-abcdefghijklmnopqrstuvwxyz'
+const stripe = 'sk_live_' + 'abcdefghijklmnopqrstuv'
+const openai = 'sk-' + 'abcdefghijklmnopqrstuvwxyz0123456789'
+const google = 'AIza' + 'SyA' + 'b'.repeat(32)
+const chitragupta = 'chg_' + 'abcdefghijklmnopqrstuvwx'
+const credential = 'api_key: "' + 'abcdefghijklmnopqrstuvwx' + '"'
+
 test('SECRET_RULES catches known key prefixes', () => {
-  assert.ok(secretRules(['const k = "AKIAABCDEFGHIJKLMNOP"']).includes('aws-access-key')) // omit-allow: test fixture, not real
-  assert.ok(secretRules(['-----BEGIN RSA PRIVATE KEY-----']).includes('private-key-block')) // omit-allow: test fixture, not real
-  assert.ok(secretRules(['token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"']).includes('github-token')) // omit-allow: test fixture, not real
-  assert.ok(secretRules(['const t = "xoxb-1234567890-abcdefghij"']).includes('slack-token')) // omit-allow: test fixture, not real
-  assert.ok(secretRules(['key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"']).includes('anthropic-key')) // omit-allow: test fixture, not real
-  assert.ok(secretRules(['const k = "sk_live_abcdefghijklmnopqrstuv"']).includes('stripe-live-key')) // omit-allow: test fixture, not real
-  assert.ok(secretRules(['const k = "AIzaSyAbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"']).includes('google-api-key')) // omit-allow: test fixture, not real
-  assert.ok(secretRules(['const k = "chg_abcdefghijklmnopqrstuvwx"']).includes('chitragupta-key')) // omit-allow: test fixture, not real
+  assert.ok(secretRules([`const k = "${aws}"`]).includes('aws-access-key'))
+  assert.ok(secretRules([privateKey]).includes('private-key-block'))
+  assert.ok(secretRules([`token = "${github}"`]).includes('github-token'))
+  assert.ok(secretRules([`const t = "${slack}"`]).includes('slack-token'))
+  assert.ok(secretRules([`key = "${anthropic}"`]).includes('anthropic-key'))
+  assert.ok(secretRules([`const k = "${stripe}"`]).includes('stripe-live-key'))
+  assert.ok(secretRules([`const k = "${google}"`]).includes('google-api-key'))
+  assert.ok(secretRules([`const k = "${chitragupta}"`]).includes('chitragupta-key'))
 })
 
 test('chitragupta-key does not false-positive on unrelated strings', () => {
@@ -22,7 +40,7 @@ test('chitragupta-key does not false-positive on unrelated strings', () => {
 })
 
 test('hardcoded-credential catches quoted literal assignments, not variable refs', () => {
-  assert.ok(secretRules(['api_key: "abcdefghijklmnopqrstuvwx"']).includes('hardcoded-credential')) // omit-allow: test fixture, not real
+  assert.ok(secretRules([credential]).includes('hardcoded-credential'))
   assert.deepEqual(secretRules(['api_key: $API_KEY']), [])
   assert.deepEqual(secretRules(['const apiKey = process.env.API_KEY']), [])
 })
@@ -45,8 +63,29 @@ test('sql-string-built fires only when built from untrusted interpolation', () =
   )
 })
 
-test('omit-allow suppresses a reviewed line', () => {
-  assert.deepEqual(findHazards(['const k = "AKIAABCDEFGHIJKLMNOP" // omit-allow: test fixture, not real']), [])
+// A secret is not a style call, so there is nothing here for a reviewer to
+// approve: the marker has to stay powerless over SECRET_RULES for the README's
+// "Secrets have no override" to be a description of the code.
+test('a secret is never suppressible, marker or not', () => {
+  const lines = [
+    `const k = "${aws}" // omit-allow:`,
+    `const k = "${aws}" // omit-allow: reviewed with the user, it is a fixture`,
+    `const k = "${aws}" # omit-allow: reviewed with the user, it is a fixture`,
+    `const k = "${aws}" // the reviewer was sure`,
+  ]
+  for (const line of lines) {
+    assert.ok(secretRules([line]).includes('aws-access-key'), `omit-allow: silenced a secret: ${line}`)
+  }
+})
+
+test('injection findings are suppressed only by a trailing comment carrying a reason', () => {
+  assert.deepEqual(findHazards(['eval(userInput) // omit-allow: reviewed with the user, input is a fixed map']), []) // omit-allow: test fixture, not real code
+  // a bare token, a token in a string literal, and a token in ordinary text are
+  // not reviews — the docs have always said `omit-allow: <reason>`
+  assert.ok(injectionRules(['eval(userInput) // omit-allow:']).includes('eval')) // omit-allow: test fixture, not real code
+  assert.ok(injectionRules(['eval(userInput) // omit-allow:   ']).includes('eval')) // omit-allow: test fixture, not real code
+  assert.ok(injectionRules(['eval(userInput); const note = "// omit-allow: not a comment"']).includes('eval')) // omit-allow: test fixture, not real code
+  assert.ok(injectionRules(['eval(userInput) && echo omit-allow: x']).includes('eval')) // omit-allow: test fixture, not real code
 })
 
 test('every SECRET_RULES entry actually matches a real sample of its own shape', () => {
@@ -54,19 +93,17 @@ test('every SECRET_RULES entry actually matches a real sample of its own shape',
   // to catch — a typo'd regex that never matches anything real would fail
   // here (unlike `re instanceof RegExp`, which is true for any regex literal
   // regardless of whether it matches its own intended shape).
-  // Each value is a test fixture, not a real credential — omit-allow: is
-  // repeated per line since hazard-sentinel checks line by line, not per block.
   const samples = {
-    'aws-access-key': 'AKIAABCDEFGHIJKLMNOP', // omit-allow: test fixture, not real
-    'private-key-block': '-----BEGIN RSA PRIVATE KEY-----', // omit-allow: test fixture, not real
-    'github-token': 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', // omit-allow: test fixture, not real
-    'slack-token': 'xoxb-1234567890-abcdefghij', // omit-allow: test fixture, not real
-    'anthropic-key': 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz', // omit-allow: test fixture, not real
-    'stripe-live-key': 'sk_live_abcdefghijklmnopqrstuv', // omit-allow: test fixture, not real
-    'openai-style-key': 'sk-abcdefghijklmnopqrstuvwxyz0123456789', // omit-allow: test fixture, not real
-    'google-api-key': 'AIzaSyAbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', // omit-allow: test fixture, not real
-    'chitragupta-key': 'chg_abcdefghijklmnopqrstuvwx', // omit-allow: test fixture, not real
-    'hardcoded-credential': 'api_key: "abcdefghijklmnopqrstuvwx"', // omit-allow: test fixture, not real
+    'aws-access-key': aws,
+    'private-key-block': privateKey,
+    'github-token': github,
+    'slack-token': slack,
+    'anthropic-key': anthropic,
+    'stripe-live-key': stripe,
+    'openai-style-key': openai,
+    'google-api-key': google,
+    'chitragupta-key': chitragupta,
+    'hardcoded-credential': credential,
   }
   assert.deepEqual(
     Object.keys(samples).sort(),

@@ -46,6 +46,15 @@ test('scoped, ordinary commands are allowed', () => {
   allowed('find ./src -name "*.test.js" -delete')
 })
 
-test('omit-allow suppresses a reviewed line', () => {
+test('omit-allow suppresses a reviewed command only as a trailing comment, with a reason', () => {
   allowed('rm -rf / # omit-allow: reviewed with the user, wiping a scratch VM')
+  // a bare token, a reasonless marker, a token in a string literal and a marker
+  // that isn't the trailing comment are all free text, not a review
+  blocked('rm -rf ~; echo omit-allow: x')
+  blocked('rm -rf ~; echo "omit-allow:"')
+  blocked('rm -rf ~; echo "# omit-allow: nope"')
+  blocked('rm -rf ~ # omit-allow:')
+  blocked('rm -rf ~ # omit-allow:   ')
+  blocked('rm -rf ~ && echo omit-allow: # looked reviewed to the regex')
+  blocked('rm -rf ~ # omit-allow: reviewed, then more command\nls')
 })

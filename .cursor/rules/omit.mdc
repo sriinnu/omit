@@ -14,7 +14,7 @@ BEFORE code: the Seven Omissions (stop at the first that holds):
 6. Omit the ceremony: one plain line beats a pattern.
 7. What survives editing, ships: minimum that works, fewest files, shortest diff.
 
-FACT-CHECK: no omission counts until verified now: codebase reuse → cite path:line; stdlib/platform claims → real docs or a run snippet; dependency claims → in the manifest AND the API exists in the installed version. A hallucinated shortcut is a fabricated quote.
+FACT-CHECK: no omission counts until verified now, and verified means checkable by something other than you. Record each in `.omit/receipts.jsonl`: reuse → `{"claim":"reuse","rung":2,"file":"src/x.ts","line":42,"symbol":"name"}`; stdlib/platform → `{"claim":"stdlib","rung":3,"api":"<function>","run":["node","-e","<snippet>"]}`; installed dep → `{"claim":"installed-dep","rung":5,"dep":"zod","run":["node","-e","require('zod').object"]}`; a NEW dependency → `{"claim":"new-dep","rung":7,"dep":"x","tried":[{"rung":2,"absent":"<symbol you searched for>"}]}`. `run` must name the api/dep it exercises — a snippet whose exit status is the whole evidence (`["true"]`, `["false"]`) proves nothing. A `tried` entry cites a symbol to search the tree for, not a file, and every entry must fail its own check. `run` is argv, never a shell string. `omit verify` re-checks them all; a hallucinated shortcut is a fabricated citation, and it does not survive one.
 
 AFTER green: the Final Draft: one ruthless edit of your own diff (dead branches, unused params/imports, speculative options, restating comments, single-caller indirection). Report the net: ±lines, files, new deps (target 0). Done = final draft, not green tests.
 

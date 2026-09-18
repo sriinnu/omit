@@ -121,7 +121,7 @@ jobs:
       - uses: sriinnu/omit@main
 ```
 
-Comments the verdict (net lines, new deps, hazards, lint, omit score) on every PR.
+Comments the verdict (net lines, new deps, hazards, lint) on every PR.
 
 ## CLI cheat sheet
 
