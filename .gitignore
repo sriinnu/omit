@@ -1,3 +1,4 @@
 node_modules/
 bench/runs/
 .omit/final-draft.md
+.DS_Store
