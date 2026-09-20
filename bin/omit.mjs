@@ -11,7 +11,6 @@
 //   omit hook install                                     add the gate to .git/hooks/pre-commit
 //   omit hook install codex                                write .codex/hooks.json (live sentinels inside Codex CLI)
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isManifest, addedDeps, unparsedDependencyFile } from '../lib/deps.mjs'
@@ -566,14 +565,22 @@ function hookInstallCodex() {
   console.log('\nCodex requires trusting new hook definitions once per session: run `/hooks` in Codex to review, or start with --dangerously-bypass-hook-trust for unattended runs.')
 }
 
-// Where git actually looks for hooks. With `core.hooksPath` set — a global
-// setup many people run — `.git/hooks/pre-commit` is never executed, so writing
-// there would print success while nothing enforced anything.
-function hooksDir(root) {
-  const r = probe(root, ['config', '--get', 'core.hooksPath'])
-  const configured = r.ok ? r.out.trim() : ''
-  if (!configured) return join('.git', 'hooks')
-  return configured.startsWith('~/') ? join(homedir(), configured.slice(2)) : configured
+// The gate goes in the repository's own hooks directory — always, never into
+// `core.hooksPath`. That setting is global on most machines that use it (a
+// hooks manager, a shared hooks repo), so writing there would install ONE
+// pre-commit gate for EVERY repository on the machine when the user asked to
+// gate this one. `hookInstall` reports the shadowing instead and leaves that
+// choice to the user.
+function hooksDir() {
+  return join('.git', 'hooks')
+}
+
+// `core.hooksPath` and the file it came from, or null when it is not set.
+function hooksPathShadow() {
+  const r = probe(process.cwd(), ['config', '--show-origin', '--get', 'core.hooksPath'])
+  if (!r.ok) return null
+  const [origin, value] = r.out.trim().split('\t')
+  return value ? { origin, value } : null
 }
 
 function hookInstall() {
@@ -581,15 +588,11 @@ function hookInstall() {
     console.error('omit: not a git repository')
     process.exit(1)
   }
-  const dir = hooksDir(process.cwd())
+  const dir = hooksDir()
   const hookPath = join(dir, 'pre-commit')
   if (existsSync(hookPath) && readFileSync(hookPath, 'utf8').includes('omit gate')) {
     console.log(`skip  pre-commit gate already installed at ${hookPath}`)
     return
-  }
-  if (!existsSync(dir)) {
-    console.error(`omit: ${dir} does not exist — create it, or \`git config --unset core.hooksPath\``)
-    process.exit(1)
   }
   const line = '\nnpx -y @sriinnu/omit gate || exit 1\n'
   if (existsSync(hookPath)) {
@@ -599,7 +602,17 @@ function hookInstall() {
   }
   chmodSync(hookPath, 0o755)
   console.log(`wrote ${hookPath}: every commit now passes the omit gate, whatever agent wrote it`)
-  if (dir !== join('.git', 'hooks')) console.log(`  (core.hooksPath is set, so this is where git runs hooks from — .git/hooks would have been ignored)`)
+  const shadow = hooksPathShadow()
+  if (shadow) {
+    console.log(
+      `\n⚠ core.hooksPath is set to ${shadow.value} (${shadow.origin}), so git will not run ${hookPath}.\n` +
+        '  omit installs into the repository, not into a global hooks directory: one gate for every\n' +
+        '  repo on this machine is not what "install the gate here" means.\n' +
+        `  To make this gate effective here:   git config core.hooksPath .git/hooks\n` +
+        `  To use your global directory instead, add this line to ${shadow.value}/pre-commit:\n` +
+        '    npx -y @sriinnu/omit gate || exit 1'
+    )
+  }
 }
 
 // The manifests the working tree change touches, tracked or not. `verify` needs

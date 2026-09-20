@@ -16,3 +16,25 @@ jobs:
           node-version: "20"
 
       - run: npm test
+
+      # action.yml is read by GitHub's action loader, not by anything in this
+      # repo, so an invalid one fails silently: the Action simply never runs and
+      # no check here notices. It shipped invalid once already — an unquoted
+      # ": " inside the description — which no test, and no reviewer, caught.
+      - name: action.yml parses
+        run: |
+          python3 - <<'PY'
+          import sys
+          try:
+              import yaml
+          except ImportError:
+              # Announced rather than silent: on a runner without PyYAML this
+              # guard is advisory, and saying so beats implying it ran.
+              print("PyYAML unavailable on this runner — action.yml was NOT validated")
+              sys.exit(0)
+          doc = yaml.safe_load(open("action.yml"))
+          for key in ("name", "description", "runs"):
+              assert key in doc, f"action.yml is missing a required key: {key}"
+          assert doc["runs"].get("using") == "composite", "runs.using must be composite"
+          print("action.yml parses and carries its required keys")
+          PY

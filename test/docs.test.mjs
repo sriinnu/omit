@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -110,6 +110,29 @@ test('the rule files do not promise mechanisms the code removed', () => {
     assert.doesNotMatch(text, /omit score|score\/100/, `${rel} still advertises the removed score`)
     assert.doesNotMatch(text, /"receipt"\s*:/, `${rel} still shows the pre-0.4.0 prose receipt shape`)
     assert.doesNotMatch(text, /"tried"\s*:\s*\[\s*\{\s*"rung"\s*:\s*\d+\s*,\s*"file"/, `${rel} still shows a tried entry citing a location`)
+  }
+})
+
+// `omit init <target>` copies a rule file out of the installed package, so a
+// target whose source is not covered by package.json's `files` array works from
+// a git checkout and fails from npm. That is exactly how `.github/` shipped
+// broken: `omit init copilot` and `omit init all` threw ENOENT for everyone who
+// installed from the registry, and nothing in this repo noticed. Note this
+// enumerates the documented targets — a new target belongs here too.
+test('every init target actually ships in the npm package', () => {
+  const files = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).files
+  const covered = (p) => files.some((f) => p === f || p.startsWith(f.replace(/\/$/, '') + '/'))
+  const targets = {
+    agents: 'AGENTS.md',
+    claude: 'skills/omit/SKILL.md',
+    cursor: '.cursor/rules/omit.mdc',
+    cline: '.clinerules/omit.md',
+    windsurf: '.windsurf/rules/omit.md',
+    copilot: '.github/copilot-instructions.md',
+  }
+  for (const [name, src] of Object.entries(targets)) {
+    assert.ok(existsSync(join(REPO, src)), `omit init ${name}: ${src} does not exist in the repo`)
+    assert.ok(covered(src), `omit init ${name}: ${src} is not covered by package.json "files" — it would be missing from the npm package`)
   }
 })
 
