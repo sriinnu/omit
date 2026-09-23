@@ -229,13 +229,14 @@ One command, three destinations (npm, GitHub, Homebrew):
 
     npm run release -- patch    # or minor / major
 
-`scripts/release.mjs` runs the tests (via `preversion`), bumps and tags with
-`npm version` (signed, per repo policy), and pushes — the tag triggers
-`publish.yml`, which publishes to npm **with a provenance attestation**. It
-then cuts the GitHub release with generated notes, waits for the registry to
-serve the version, and updates the `omit` formula in
-[`sriinnu/homebrew-tap`](https://github.com/sriinnu/homebrew-tap). A failed
-step aborts the release, in order.
+`scripts/release.mjs` runs the tests (via `preversion`), bumps the version,
+and lands the bump on main **through a PR** (main takes no direct pushes).
+Once checks pass and it merges, the script tags the merge (signed, per repo
+policy) and pushes the tag — which triggers `publish.yml`, publishing to npm
+**with a provenance attestation**. It then cuts the GitHub release with
+generated notes, waits for the registry to serve the version, and updates the
+`omit` formula in [`sriinnu/homebrew-tap`](https://github.com/sriinnu/homebrew-tap),
+again through a PR. A failed step aborts the release, in order.
 
 Never `npm publish` by hand: a local publish cannot attach provenance, and
 npm will not let the same version be republished to add one later. If the CI
