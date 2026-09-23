@@ -223,6 +223,28 @@ skills/omit/SKILL.md  →  .claude/skills/omit/SKILL.md      (project)
 - `/omit [margin|redline|rewrite|off]`: switch or show the current mode
 - `/omit-edit`: run an editor's pass over the current diff: flag bloat, uncited claims, missing footnotes, and cut opportunities
 
+## Releasing
+
+One command, three destinations (npm, GitHub, Homebrew):
+
+    npm run release -- patch    # or minor / major
+
+`scripts/release.mjs` runs the tests (via `preversion`), bumps and tags with
+`npm version` (signed, per repo policy), and pushes — the tag triggers
+`publish.yml`, which publishes to npm **with a provenance attestation**. It
+then cuts the GitHub release with generated notes, waits for the registry to
+serve the version, and updates the `omit` formula in
+[`sriinnu/homebrew-tap`](https://github.com/sriinnu/homebrew-tap). A failed
+step aborts the release, in order.
+
+Never `npm publish` by hand: a local publish cannot attach provenance, and
+npm will not let the same version be republished to add one later. If the CI
+publish fails, fix CI — don't work around it locally.
+
+If the `NPM_TOKEN` secret ever goes stale, put the new token in `~/.npmrc`
+and run `npm run token:sync` — it verifies the token against the registry
+before pushing, so a dead token never reaches CI.
+
 ## Prior art
 
 The minimalism-pressure idea was popularized by [ponytail](https://github.com/DietrichGebert/ponytail), which deserves its stars. `omit` differs where it matters: shortcuts require citations, the diff is edited *after* it works, safety lines are enumerated and never cut, and what's left out is footnoted instead of silent.
