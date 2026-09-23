@@ -1,0 +1,5 @@
+{"claim":"reuse","rung":2,"file":".github/workflows/publish.yml","line":50,"symbol":"npm publish --access public --provenance"}
+{"claim":"stdlib","rung":3,"api":"npm version","run":["npm","version","--help"]}
+{"claim":"stdlib","rung":3,"api":"curl","run":["curl","--version"]}
+{"claim":"stdlib","rung":3,"api":"shasum","run":["shasum","-a","256","/dev/null"]}
+{"claim":"stdlib","rung":3,"api":"gh secret set","run":["gh","secret","set","--help"]}
