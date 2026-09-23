@@ -38,3 +38,21 @@ jobs:
           assert doc["runs"].get("using") == "composite", "runs.using must be composite"
           print("action.yml parses and carries its required keys")
           PY
+
+      # Same failure mode as action.yml: Claude Code tolerates an unquoted ": "
+      # in a description, but strict YAML loaders (the skills CLI, skill
+      # indexers) reject the whole file, and the skill silently disappears.
+      - name: skill and rule frontmatter parses
+        run: |
+          python3 - <<'PY'
+          import sys
+          try:
+              import yaml
+          except ImportError:
+              print("PyYAML unavailable on this runner — frontmatter was NOT validated")
+              sys.exit(0)
+          for path in ("skills/omit/SKILL.md", ".cursor/rules/omit.mdc"):
+              meta = yaml.safe_load(open(path).read().split("---")[1])
+              assert meta.get("description"), f"{path}: frontmatter has no description"
+              print(f"{path}: frontmatter parses")
+          PY

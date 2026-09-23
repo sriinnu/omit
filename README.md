@@ -174,6 +174,12 @@ New here? **[GETTING-STARTED.md](GETTING-STARTED.md)** has a copy-paste setup fo
 /plugin install omit@omit
 ```
 
+**Any SKILL.md-aware agent** (Claude Code, Codex, Cursor, and others, via [skills.sh](https://skills.sh)):
+
+```
+npx skills add sriinnu/omit
+```
+
 **Global command**: install once from GitHub, use everywhere:
 
 ```
