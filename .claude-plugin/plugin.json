@@ -3,10 +3,27 @@
   "version": "0.4.0",
   "description": "Omit needless code. Editorial discipline for AI coding agents: draft less, cite everything, cut last: enforced by hooks, not just asked for.",
   "author": {
-    "name": "omit contributors"
+    "name": "sriinnu",
+    "url": "https://github.com/sriinnu"
   },
   "homepage": "https://github.com/sriinnu/omit",
   "license": "MIT",
-  "keywords": ["minimalism", "code-quality", "skill", "editorial", "less-code", "hooks", "secrets", "security"],
+  "keywords": [
+    "minimalism",
+    "code-quality",
+    "skill",
+    "editorial",
+    "less-code",
+    "hooks",
+    "secrets",
+    "security",
+    "agent-skills",
+    "claude-skills",
+    "claude-code",
+    "ai-coding",
+    "coding-agent",
+    "code-review",
+    "pre-commit"
+  ],
   "hooks": "./hooks/hooks.json"
 }

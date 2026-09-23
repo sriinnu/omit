@@ -1,6 +1,6 @@
 ---
 name: omit
-description: Editorial discipline for AI-written code: omit needless code, cite every claim, cut after it works. Use when writing or changing code, when the user says "omit", "tighten this", "simplest solution", "do less", or complains about over-engineering, bloat, or hallucinated APIs.
+description: "Editorial discipline for AI-written code: omit needless code, cite every claim, cut after it works. Use when writing or changing code, when the user says \"omit\", \"tighten this\", \"simplest solution\", \"do less\", or complains about over-engineering, bloat, or hallucinated APIs."
 ---
 
 # omit

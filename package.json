@@ -36,7 +36,19 @@
     "code-quality",
     "agent-skill",
     "secrets-detection",
-    "pre-commit"
+    "pre-commit",
+    "agent-skills",
+    "claude-skills",
+    "skill-md",
+    "agents-md",
+    "codex",
+    "windsurf",
+    "cline",
+    "github-copilot",
+    "llm",
+    "ai-coding",
+    "code-review",
+    "github-action"
   ],
   "repository": {
     "type": "git",
