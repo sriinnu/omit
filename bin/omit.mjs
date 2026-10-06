@@ -10,6 +10,7 @@
 //   omit leak "<cmd>"                                     would this command print a real secret to stdout?
 //   omit hook install                                     add the gate to .git/hooks/pre-commit
 //   omit hook install codex                                write .codex/hooks.json (live sentinels inside Codex CLI)
+//   omit hook install ribhu                               write .ribhu/hooks.json (live sentinels inside Ribhu)
 //   omit codemode run [file]                              run one sandboxed script over read-only repo tools (stdin without a file)
 //   omit codemode                                         the same, as an MCP server on stdio
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, chmodSync } from 'node:fs'
@@ -520,11 +521,9 @@ function leak(args) {
 // too since Codex documents the same events, but Codex's apply_patch tool_input
 // shape for PostToolUse isn't confirmed here — those three no-op safely if the
 // file_path field isn't present, so this is best-effort, not verified parity.
-function hookInstallCodex() {
-  const dir = '.codex'
-  const hooksPath = join(dir, 'hooks.json')
-  mkdirSync(dir, { recursive: true })
-
+// An existing hooks file is merged into, never replaced: someone else's hooks
+// live there too. One that cannot be read is refused rather than overwritten.
+function loadHooksDoc(hooksPath) {
   let doc = { hooks: {} }
   if (existsSync(hooksPath)) {
     try {
@@ -537,10 +536,18 @@ function hookInstallCodex() {
   doc.hooks ??= {}
   for (const [event, entry] of Object.entries(doc.hooks)) {
     if (entry !== undefined && !Array.isArray(entry)) {
-      console.error(`omit: ${hooksPath} has a malformed "${event}" entry (expected an array of matcher groups) — fix or remove it first`)
+      console.error(`omit: ${hooksPath} has a malformed "${event}" entry (expected an array) — fix or remove it first`)
       process.exit(1)
     }
   }
+  return doc
+}
+
+function hookInstallCodex() {
+  const dir = '.codex'
+  const hooksPath = join(dir, 'hooks.json')
+  mkdirSync(dir, { recursive: true })
+  const doc = loadHooksDoc(hooksPath)
 
   const scriptCmd = (script) => `node "${join(pkgRoot, 'hooks', script)}"`
   const mergeHook = (event, matcher, script) => {
@@ -661,6 +668,42 @@ function verify() {
 // on purpose: a verdict rendered from a diff that could not be read is the
 // failure this whole contract exists to prevent, and a gate that cannot read the
 // change has to block it rather than pass it.
+// Ribhu's hooks.json is not Codex's. Each event holds a flat list of
+// { matcher, command }, the matcher is a regex over Ribhu's own lowercase tool
+// names, and the payload a command receives is shaped differently, so every
+// entry runs a sentinel through hooks/ribhu-adapter.mjs. Ribhu's code mode
+// sends each nested tool call through these same hooks, so a script's writes
+// are checked like direct ones.
+function hookInstallRibhu() {
+  const dir = '.ribhu'
+  const hooksPath = join(dir, 'hooks.json')
+  mkdirSync(dir, { recursive: true })
+  const doc = loadHooksDoc(hooksPath)
+
+  const add = (event, matcher, sentinel, extra) => {
+    const command = `node "${join(pkgRoot, 'hooks', 'ribhu-adapter.mjs')}" ${sentinel}`
+    doc.hooks[event] ??= []
+    if (!doc.hooks[event].some((h) => h?.command === command)) doc.hooks[event].push({ ...(matcher && { matcher }), command, ...extra })
+  }
+  // Anchored: Ribhu matches with an unanchored regex, and a bare `write`
+  // would also catch todo_write.
+  const files = 'edit|multi_edit|ast_edit|write'
+  add('PreToolUse', '^bash$', 'command-sentinel')
+  add('PreToolUse', '^bash$', 'leak-sentinel')
+  add('PostToolUse', `^(bash|${files})$`, 'dep-sentinel')
+  add('PostToolUse', `^(bash|${files})$`, 'hazard-sentinel')
+  // Ribhu gives a hook ten seconds unless told otherwise, and a linter on a
+  // large repo takes longer; sixty is the most it allows.
+  add('PostToolUse', `^(${files})$`, 'lint-sentinel', { timeoutMs: 60000 })
+  add('Stop', undefined, 'final-draft-gate')
+
+  writeFileSync(hooksPath, JSON.stringify(doc, null, 2) + '\n')
+  console.log(`wrote ${hooksPath}`)
+  console.log('  command + leak sentinels before bash; dependency + hazard sentinels after bash and file edits; lint after file edits; Final Draft gate on Stop')
+  console.log("  checked against Ribhu's hook contract with real payload shapes; not yet verified firing inside a live Ribhu session")
+  console.log('\nRibhu runs a repository\'s hooks only once the project is trusted.')
+}
+
 // ---------- codemode ----------
 // The sandbox is an optional peer, loaded here and nowhere else: every other
 // command has to keep working on a machine that never installed it.
@@ -698,15 +741,16 @@ try {
   else if (cmd === 'verify') verify()
   else if (cmd === 'codemode') await codemode(rest)
   else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === 'codex') hookInstallCodex()
+  else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === 'ribhu') hookInstallRibhu()
   else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === undefined) hookInstall()
   else if (cmd === 'hook' && rest[0] === 'install') {
-    console.error(`omit: unrecognized 'hook install' target '${rest[1]}' — usage: omit hook install [codex]`)
+    console.error(`omit: unrecognized 'hook install' target '${rest[1]}' — usage: omit hook install [codex|ribhu]`)
     process.exit(1)
   }
   else if (cmd === 'init') init(rest[0])
   else if (targets[cmd]) init(cmd) // back-compat: `omit cursor`
   else {
-    console.error('usage: omit <init|audit|check|gate|lint|guard|leak|verify|codemode|hook install|hook install codex>')
+    console.error('usage: omit <init|audit|check|gate|lint|guard|leak|verify|codemode|hook install [codex|ribhu]>')
     process.exit(cmd ? 1 : 0)
   }
 } catch (e) {

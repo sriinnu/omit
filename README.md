@@ -50,6 +50,8 @@ Every other skill in this genre is words the agent can ignore under context pres
 
 Hooks install automatically with the Claude Code plugin. Codex CLI has its own hooks system in the same shape (`PreToolUse` fires with `tool_input.command` for Bash, exit 2 blocks) — run `npx @sriinnu/omit hook install codex` to write `.codex/hooks.json`. The command and leak sentinels are verified against Codex's documented schema and payload shape (not yet a live Codex session firing them end-to-end); the file-based sentinels (dep/hazard/lint) and the Final Draft gate are wired too but best-effort, since Codex's `apply_patch` input shape for those isn't verified. Escape hatch for humans: `OMIT_OFF=1`.
 
+[Ribhu](https://github.com/sriinnu/ribhu) has shell hooks too, with its own file shape and payload: `npx @sriinnu/omit hook install ribhu` writes `.ribhu/hooks.json`, and a small adapter translates Ribhu's payload so the same sentinels run unchanged. Ribhu sends every tool call a code-mode script makes through those hooks, so a script's writes are checked like direct ones. The hooks are tested by firing each installed command the way Ribhu does, with payloads in its shape; they have not yet been watched firing inside a live Ribhu session.
+
 ## What this does not catch
 
 A table of mechanisms invites you to read it as a guarantee. It isn't one, so here is the rest of it. Every item below is a known, reproduced limit, not a hypothetical.
@@ -112,6 +114,7 @@ npx @sriinnu/omit guard "<cmd>"  # is this shell command a disaster? (wire into 
 npx @sriinnu/omit leak "<cmd>"   # would this command print a real secret to stdout?
 npx @sriinnu/omit gate           # the pre-commit check, callable from anywhere
 npx @sriinnu/omit hook install codex  # write .codex/hooks.json — live sentinels inside Codex CLI
+npx @sriinnu/omit hook install ribhu  # write .ribhu/hooks.json — live sentinels inside Ribhu
 ```
 
 And server-side, the GitHub Action comments the verdict on every PR regardless of what wrote the code:
