@@ -61,6 +61,11 @@ const pkg = out("node", ["-p", "require('./package.json').name"]);
 const manifest = ".claude-plugin/plugin.json";
 writeFileSync(manifest, readFileSync(manifest, "utf8")
   .replace(/"version": "[^"]*"/, `"version": "${version}"`));
+// the docs pin the Action to a release, and GitHub Marketplace shows main's
+// README, so the pins move to the tag being cut
+for (const doc of ["README.md", "GETTING-STARTED.md"])
+  writeFileSync(doc, readFileSync(doc, "utf8")
+    .replaceAll(/sriinnu\/omit@v\d+\.\d+\.\d+/g, `sriinnu/omit@${tag}`));
 
 // --- the version bump rides a PR; main does not take direct pushes
 const branch = `release/${tag}`;

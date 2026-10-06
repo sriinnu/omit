@@ -55,10 +55,10 @@
     "url": "https://github.com/sriinnu/omit.git"
   },
   "devDependencies": {
-    "@earendil-works/pi-codemode": "^1.0.4"
+    "@earendil-works/pi-codemode": "^1.0.3"
   },
   "peerDependencies": {
-    "@earendil-works/pi-codemode": "^1.0.4"
+    "@earendil-works/pi-codemode": "^1.0.3"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-codemode": {

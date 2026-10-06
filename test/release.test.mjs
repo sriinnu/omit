@@ -26,6 +26,18 @@ test('the plugin manifest carries the package version', () => {
   assert.equal(json('.claude-plugin/plugin.json').version, json('package.json').version)
 })
 
+// A workflow snippet that names an older release tells every new adopter to
+// install it. The release script moves these pins with the version; this is
+// what notices when a pin is added somewhere it does not look.
+test('the docs pin the Action to the package version', () => {
+  const pin = `sriinnu/omit@v${json('package.json').version}`
+  for (const doc of ['README.md', 'GETTING-STARTED.md']) {
+    const pins = readFileSync(path(doc), 'utf8').match(/sriinnu\/omit@\S+/g) ?? []
+    assert.ok(pins.length, `${doc} no longer shows how to use the Action`)
+    for (const found of pins) assert.equal(found, pin, doc)
+  }
+})
+
 // The sandbox is declared twice on purpose: as an optional peer for whoever
 // installs omit, and as a dev dependency so a checkout installs it and keeps
 // it. The formula is built from the peer range, so the two must agree.
