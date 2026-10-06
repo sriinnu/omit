@@ -34,10 +34,13 @@ runs:
         BASE="${{ inputs.base }}"
         if [ -z "$BASE" ]; then BASE="origin/${{ github.event.pull_request.base.ref }}"; fi
         git fetch --depth=1 origin "${{ github.event.pull_request.base.ref }}" || true
-        node "${{ github.action_path }}/bin/omit.mjs" audit --base "$BASE" --markdown > omit-verdict.md
-        cat omit-verdict.md
+        # Outside the workspace: the redirect creates the file before the audit
+        # runs, and the audit counts untracked files — a verdict written into
+        # the checkout reports itself as one more changed file.
+        node "${{ github.action_path }}/bin/omit.mjs" audit --base "$BASE" --markdown > "$RUNNER_TEMP/omit-verdict.md"
+        cat "$RUNNER_TEMP/omit-verdict.md"
     - name: Comment on PR
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-      run: gh pr comment ${{ github.event.pull_request.number }} --body-file omit-verdict.md --repo ${{ github.repository }}
+      run: gh pr comment ${{ github.event.pull_request.number }} --body-file "$RUNNER_TEMP/omit-verdict.md" --repo ${{ github.repository }}
