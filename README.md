@@ -48,7 +48,7 @@ Every other skill in this genre is words the agent can ignore under context pres
 | **Final Draft gate** (hook) | The session cannot end with an edited tree and no current `.omit/final-draft.md` net report — and the report is read, not just stat'd. Its files/lines/deps counts are cross-checked against the actual diff, so a stub or a stale draft does not pass. The deletion pass is a gate, not a suggestion. |
 | **Receipts ledger** | Every Fact-Check citation is appended to `.omit/receipts.jsonl` as a claim *plus the evidence that settles it*, and `omit verify` re-checks the lot. Run it on a PR: "17/17 claims survived" is a number a reviewer can act on, and "3 refuted" names exactly which shortcuts were invented. |
 
-Hooks install automatically with the Claude Code plugin. Codex CLI has its own hooks system in the same shape (`PreToolUse` fires with `tool_input.command` for Bash, exit 2 blocks) — run `npx @sriinnu/omit hook install codex` to write `.codex/hooks.json`. The command and leak sentinels are verified against Codex's documented schema and payload shape (not yet a live Codex session firing them end-to-end); the file-based sentinels (dep/hazard/lint) and the Final Draft gate are wired too but best-effort, since Codex's `apply_patch` input shape for those isn't verified. Escape hatch for humans: `OMIT_OFF=1`.
+Hooks install automatically with the Claude Code plugin. For Codex, run `npx @sriinnu/omit hook install codex` to merge hooks into `.codex/hooks.json`; rerunning preserves existing hooks without duplicating omit's entries. Command and leak sentinels check `Bash` before execution. Dependency and hazard sentinels also check shell edits afterward. File sentinels read `apply_patch` from `tool_input.command`, checking all added/updated paths and move destinations while skipping deleted files. Malformed patch envelopes produce an objection. Payload regression tests cover these contracts; live Codex delivery and Stop-gate behavior still require end-to-end verification. These hooks do not impose a token budget or compact transcripts. Escape hatch for humans: `OMIT_OFF=1`.
 
 [Ribhu](https://github.com/sriinnu/ribhu) has shell hooks too, with its own file shape and payload: `npx @sriinnu/omit hook install ribhu` writes `.ribhu/hooks.json`, and a small adapter translates Ribhu's payload so the same sentinels run unchanged. Ribhu sends every tool call a code-mode script makes through those hooks, so a script's writes are checked like direct ones. The hooks are tested by firing each installed command the way Ribhu does, with payloads in its shape; they have not yet been watched firing inside a live Ribhu session.
 
@@ -213,6 +213,66 @@ args = ["codemode"]
 Say `omit redline` (or any mode) in chat, or use `/omit <mode>` where slash commands are supported.
 
 ## Install
+
+### Hook health and context controls
+
+These features run locally with Node and do not call a model or provider API.
+Use the same CLI with any provider/model; hook installation targets the host,
+not the model. Codex and Claude adapters are included. Other hosts need the
+documented stdin/output contract below; automatic interception is not universal.
+
+```sh
+omit doctor                # read-only hook inspection; never runs discovered commands
+omit doctor --json         # same findings for scripts; exit 1 on errors
+omit init skill            # discoverable .agents/skills/omit/SKILL.md; never overwrite
+omit hook install codex --context
+omit hook install claude --context
+```
+
+The doctor inspects global Codex hooks plus the current directory's
+`.codex/hooks.json` and `.claude/settings.json`. It reports missing scripts,
+duplicate registrations, malformed matchers, some legacy shell-tool name
+mismatches, and Git `core.hooksPath` overrides. It checks simple Node/Python
+script commands statically; other command shapes are explicitly unchecked.
+It does not resolve all parent layers, host trust, executable availability, or
+prove that hooks fired. `liveDelivery` remains `unverified`.
+
+`--context` adds advisory broad-read warnings and a text output guard. Default
+installations keep the existing safety hooks without adding context controls.
+At more than 6,000 characters, a plain-string shell result is archived privately
+under the OS temporary directory and replaced with head/tail excerpts, selected
+error lines, and its full-output path. Set `OMIT_OUTPUT_CHARS` to 1000–100000 to
+change the excerpt character budget. The wrapper/path adds a small overhead.
+Structured results (objects, arrays, MCP content) are left intact. Storage
+failure preserves the original result and emits a diagnostic. Archives can
+contain sensitive output: files use mode 0600 inside a mode-0700 directory on
+POSIX systems. They persist until temporary storage is cleaned; no existing
+transcript is rewritten. Inspect the archive when a missing middle section
+matters; diagnostic extraction is heuristic and not exhaustive.
+
+Three consecutive identical command/result pairs in the same cwd/session
+produce one advisory warning. A changed pair resets the counter. Only hashes
+and a bounded counter are stored for this check; it does not prove filesystem
+state is unchanged. Parallel invocations may undercount, so this is not a gate.
+
+For another host, invoke `omit context` with JSON on stdin:
+
+```json
+{"hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"example","cwd":"/your/project","tool_input":{"command":"your command"},"tool_response":"plain text output"}
+```
+
+Use `PreToolUse` for read-scope advice. Shell names `Bash`, `exec_command`, and
+`shell` are accepted (`tool_input.cmd` is also accepted). `systemMessage` is
+advisory; `decision: "block"` with `reason` requests post-tool feedback replacing
+the result in Codex. Other hosts must translate that response into their own
+replacement API: some only append feedback. Verify delivery and replacement
+before claiming context savings. No model quota or token-saving guarantee is
+inferred from character counts. Set `OMIT_OFF=1` to bypass the hooks; remove only
+the `context-sentinel.mjs` entries to uninstall these optional controls.
+
+The packaged skill remains at `skills/omit/SKILL.md`; `omit init skill` copies it
+to the shared project discovery path. Hosts with different discovery paths can
+install the same skill there. No provider credentials are required.
 
 New here? **[GETTING-STARTED.md](GETTING-STARTED.md)** has a copy-paste setup for every agent.
 

@@ -3,6 +3,7 @@
 // objects immediately on errors. omit brings no lint rules of its own.
 import { readFileSync } from 'node:fs'
 import { lintFiles } from '../lib/lint.mjs'
+import { patchPaths } from '../lib/patch-paths.mjs'
 
 if (process.env.OMIT_OFF === '1') process.exit(0)
 
@@ -31,10 +32,11 @@ try {
     )
   }
   const file = ti.file_path
-  if (!file) process.exit(0)
+  const files = patchPaths(data) ?? (file ? [file] : [])
+  if (!files.length) process.exit(0)
 
   const cwd = data.cwd ?? process.cwd()
-  const failing = lintFiles(cwd, [file]).filter((r) => !r.ok)
+  const failing = lintFiles(cwd, files).filter((r) => !r.ok)
   if (failing.length === 0) process.exit(0)
 
   console.error(

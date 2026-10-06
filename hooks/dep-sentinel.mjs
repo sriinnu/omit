@@ -11,6 +11,7 @@ import { isManifest, addedDeps, MANIFESTS } from '../lib/deps.mjs'
 import { probe, fileAtRevision, repoRelPath } from '../lib/git.mjs'
 import { execDisabled, flagOn } from '../lib/exec.mjs'
 import { newDepCitations } from '../lib/receipts.mjs'
+import { patchPaths } from '../lib/patch-paths.mjs'
 
 if (process.env.OMIT_OFF === '1') process.exit(0)
 
@@ -117,7 +118,8 @@ try {
   }
 
   const cwd = data.cwd ?? process.cwd()
-  const targets =
+  const patched = patchPaths(data)
+  const targets = patched !== null ? patched.filter(isManifest) :
     typeof ti.file_path === 'string' ? (isManifest(ti.file_path) ? [ti.file_path] : []) : typeof ti.command === 'string' ? manifestsTouched(ti.command) : []
   if (targets.length === 0) process.exit(0) // an edit that cannot be a manifest edit
 

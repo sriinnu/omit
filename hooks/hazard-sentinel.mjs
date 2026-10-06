@@ -11,6 +11,7 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { probe, git, fileAtRevision, repoRelPath } from '../lib/git.mjs'
 import { findHazards } from '../lib/hazards.mjs'
+import { patchPaths } from '../lib/patch-paths.mjs'
 
 if (process.env.OMIT_OFF === '1') process.exit(0)
 
@@ -128,16 +129,19 @@ try {
 
   const file = typeof ti.file_path === 'string' ? ti.file_path : typeof ti.notebook_path === 'string' ? ti.notebook_path : null
   let findings = []
-  if (file !== null && !/\.lock$/.test(basename(file)) && basename(file) !== 'package-lock.json') {
+  const files = patchPaths(data) ?? (file === null ? [] : [file])
+  if (files.length) {
     const root = repoRootOrNull(cwd)
-    const abs = resolve(cwd, file)
-    const rel = root === null ? null : relInRoot(root, abs)
-    if (!inOmitDir(rel ?? file)) {
-      // A notebook's added content is the cell the tool just wrote; there is no
-      // useful diff of a .ipynb and no file_path to diff it with.
-      findings = typeof ti.new_source === 'string' ? findHazards(ti.new_source.split('\n')) : findHazards(addedLines(abs, rel, root))
+    for (const file of files) {
+      if (/\.lock$/.test(basename(file)) || basename(file) === 'package-lock.json') continue
+      const abs = resolve(cwd, file)
+      const rel = root === null ? null : relInRoot(root, abs)
+      if (!inOmitDir(rel ?? file)) {
+        // A notebook's added content is the cell the tool just wrote.
+        findings.push(...(typeof ti.new_source === 'string' ? findHazards(ti.new_source.split('\n')) : findHazards(addedLines(abs, rel, root))))
+      }
     }
-  } else if (typeof ti.command === 'string' && WRITE_SHAPES.test(ti.command)) {
+  } else if (data.tool_name !== 'apply_patch' && typeof ti.command === 'string' && WRITE_SHAPES.test(ti.command)) {
     const root = repoRootOrNull(cwd)
     // The command's own text carries what a heredoc writes. Secret rules only:
     // the injection rules are about code landing in a file, and the file check

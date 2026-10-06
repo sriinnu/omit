@@ -3,3 +3,6 @@
 {"claim":"stdlib","rung":3,"api":"curl","run":["curl","--version"]}
 {"claim":"stdlib","rung":3,"api":"shasum","run":["shasum","-a","256","/dev/null"]}
 {"claim":"new-dep","rung":7,"dep":"@earendil-works/pi-codemode","tried":[{"rung":2,"absent":"node:worker_threads"},{"rung":3,"api":"node:vm","run":["node","-e","const p = require(\"node:vm\").runInNewContext(\"this.constructor.constructor(\\\"return process\\\")()\"); process.exit(p === process ? 1 : 0)"]},{"rung":5,"dep":"isolated-vm","run":["node","-e","require(\"isolated-vm\")"]}]}
+{"claim":"reuse","rung":2,"file":"lib/lint.mjs","line":92,"symbol":"export function lintFiles"}
+{"claim":"reuse","rung":2,"file":"lib/git.mjs","line":36,"symbol":"export function probe"}
+{"claim":"stdlib","rung":3,"api":"createHash","run":["node","-e","require('node:crypto').createHash('sha256').update('synthetic').digest('hex')"]}

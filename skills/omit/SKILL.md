@@ -1,6 +1,6 @@
 ---
 name: omit
-description: "Editorial discipline for AI-written code: omit needless code, cite every claim, cut after it works. Use when writing or changing code, when the user says \"omit\", \"tighten this\", \"simplest solution\", \"do less\", or complains about over-engineering, bloat, or hallucinated APIs."
+description: "Editorial discipline for AI-written code and local agent guardrails. Use for omit, simplifying code, verifying hook health, or reducing excessive tool output and repeated reads."
 ---
 
 # omit
@@ -11,7 +11,27 @@ Great software is edited, not written. You are the editor, not just the author: 
 
 > Draft less. Cite everything. Cut last.
 
-## Modes
+## Hook health and context controls
+
+Use the locally installed `omit` CLI, or `node bin/omit.mjs` from its source
+checkout. These deterministic checks require no model, provider, API key, or
+network call. `omit doctor --json` inspects configuration without executing hook
+commands. Script existence and synthetic tests do not prove live hook delivery.
+
+`omit hook install codex --context` or `omit hook install claude --context`
+merges opt-in context hooks into the current project's hook file. This changes
+host configuration; use it when installation is requested. `omit init skill`
+copies this skill to `.agents/skills/omit/SKILL.md` without overwriting a file.
+
+The context guard warns about broad reads and three consecutive identical
+command/results. It archives long plain-text shell output privately and returns
+head/tail excerpts; inspect the archive when omitted details matter. Structured
+results are untouched. `OMIT_OUTPUT_CHARS` controls excerpt characters (default
+6000, range 1000–100000), not tokens. It is not a quota cap. `OMIT_OFF=1` disables
+the hooks. Other hosts can invoke `omit context` with compatible JSON on stdin;
+verify their output-replacement contract before enabling truncation.
+
+## Editorial modes
 
 - **margin**: build as asked; leave notes in the margin where something could have been omitted.
 - **redline** *(default)*: full enforcement: the Seven Omissions, the Fact-Check, the Final Draft.

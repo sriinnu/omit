@@ -10,6 +10,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, ut
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { patchPaths } from '../lib/patch-paths.mjs'
 
 // OMIT_HOOKS_DIR replays the same payloads against another checkout of the hooks,
 // which is how each case below can be shown failing before its fix and passing
@@ -39,6 +40,69 @@ const hook = (name, payload, { env = {} } = {}) =>
 
 const edit = (dir, file) => ({ cwd: dir, tool_input: { file_path: file } })
 const bash = (dir, command) => ({ cwd: dir, tool_input: { command } })
+const patch = (dir, body) => ({ cwd: dir, tool_name: 'apply_patch', tool_input: { command: `*** Begin Patch\n${body}\n*** End Patch` } })
+
+test('Codex patch paths cover spaces, moves, deletes and multiple files', () => {
+  assert.deepEqual(patchPaths(patch('.', '*** Update File: old.js\n*** Move to: new name.js\n@@\n+x\n*** Add File: b.js\n+*** Add File: fake.js\n*** Delete File: gone.js')), ['new name.js', 'b.js'])
+  assert.equal(patchPaths(bash('.', 'echo hello')), null)
+  assert.deepEqual(patchPaths(patch('.', '*** Delete File: gone.js')), [])
+})
+
+for (const name of ['dep-sentinel.mjs', 'hazard-sentinel.mjs', 'lint-sentinel.mjs']) {
+  test(`${name} objects to an unreadable Codex patch`, () => {
+    const r = hook(name, { tool_name: 'apply_patch', tool_input: { command: 'not a patch' } })
+    assert.equal(r.status, 2, r.stderr)
+  })
+}
+
+test('Codex patch checks a dependency manifest after an unrelated file', () => {
+  const { dir } = repo()
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { 'left-pad': '1.3.0' } }))
+  const r = hook('dep-sentinel.mjs', patch(dir, '*** Add File: note.txt\n+hello\n*** Add File: package.json\n+{}'))
+  assert.equal(r.status, 2, r.stderr)
+  assert.match(r.stderr, /left-pad/)
+})
+
+test('Codex patch scans the destination of a moved file for hazards', () => {
+  const { dir } = repo()
+  writeFileSync(join(dir, 'safe.js'), 'const a = 1\n')
+  writeFileSync(join(dir, 'new name.js'), `${SECRET}\n`)
+  const r = hook('hazard-sentinel.mjs', patch(dir, '*** Update File: safe.js\n@@\n+const a = 1\n*** Update File: old.js\n*** Move to: new name.js\n@@\n+changed'))
+  assert.equal(r.status, 2, r.stderr)
+  assert.match(r.stderr, /secret/i)
+})
+
+test('Codex patch lint checks every surviving path, excluding deleted files', () => {
+  const { dir } = repo()
+  writeFileSync(join(dir, 'ruff.toml'), '')
+  const bin = join(dir, 'bin')
+  mkdirSync(bin)
+  writeFileSync(join(bin, 'ruff'), '#!/bin/sh\nprintf "%s\\n" "$@" >&2\nexit 1\n')
+  chmodSync(join(bin, 'ruff'), 0o755)
+  const r = hook('lint-sentinel.mjs', patch(dir, '*** Add File: one.py\n+x\n*** Update File: old.py\n*** Move to: two words.py\n@@\n+x\n*** Delete File: gone.py'), { env: { PATH: `${bin}:${process.env.PATH}` } })
+  assert.equal(r.status, 2, r.stderr)
+  assert.match(r.stderr, /one.py/)
+  assert.match(r.stderr, /two words.py/)
+  assert.doesNotMatch(r.stderr, /gone.py|old.py/)
+})
+
+test('Codex installer preserves existing hooks and adds shell checks idempotently', () => {
+  const { dir } = repo()
+  mkdirSync(join(dir, '.codex'))
+  const path = join(dir, '.codex', 'hooks.json')
+  writeFileSync(path, JSON.stringify({ hooks: { PreCompact: [{ hooks: [{ type: 'command', command: 'existing-hook' }] }] } }))
+  const cli = fileURLToPath(new URL('../bin/omit.mjs', import.meta.url))
+  execFileSync(process.execPath, [cli, 'hook', 'install', 'codex'], { cwd: dir, env: ENV })
+  const first = readFileSync(path, 'utf8')
+  execFileSync(process.execPath, [cli, 'hook', 'install', 'codex'], { cwd: dir, env: ENV })
+  assert.equal(readFileSync(path, 'utf8'), first)
+  const doc = JSON.parse(first)
+  assert.equal(doc.hooks.PreCompact[0].hooks[0].command, 'existing-hook')
+  const shell = doc.hooks.PostToolUse.find(g => g.matcher === 'Bash')
+  assert.equal(shell.hooks.length, 2)
+  assert.ok(shell.hooks.some(h => h.command.includes('dep-sentinel.mjs')))
+  assert.ok(shell.hooks.some(h => h.command.includes('hazard-sentinel.mjs')))
+})
 
 const ledger = (dir, ...lines) => {
   mkdirSync(join(dir, '.omit'), { recursive: true })

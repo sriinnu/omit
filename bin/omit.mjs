@@ -24,6 +24,7 @@ import { lintFiles } from '../lib/lint.mjs'
 import { assessCommand } from '../lib/danger.mjs'
 import { assessLeak } from '../lib/leaks.mjs'
 import { execute, serve } from '../lib/codemode.mjs'
+import { doctor } from '../lib/doctor.mjs'
 
 const cwd = process.cwd()
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -31,6 +32,7 @@ const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 // ---------- init ----------
 const targets = {
   agents: [['AGENTS.md', 'AGENTS.md']],
+  skill: [['skills/omit/SKILL.md', '.agents/skills/omit/SKILL.md']],
   claude: [[join('skills', 'omit', 'SKILL.md'), join('.claude', 'skills', 'omit', 'SKILL.md')]],
   cursor: [[join('.cursor', 'rules', 'omit.mdc'), join('.cursor', 'rules', 'omit.mdc')]],
   cline: [[join('.clinerules', 'omit.md'), join('.clinerules', 'omit.md')]],
@@ -514,13 +516,6 @@ function leak(args) {
   process.exit(1)
 }
 
-// Codex CLI's hook schema is the same shape as Claude Code's (confirmed against
-// developers.openai.com/codex/hooks: PreToolUse fires with tool_input.command for
-// Bash, exit 2 blocks). Command-sentinel and leak-sentinel run on that shape as-is.
-// The PostToolUse file hooks (dep/hazard/lint-sentinel) and the Stop gate are wired
-// too since Codex documents the same events, but Codex's apply_patch tool_input
-// shape for PostToolUse isn't confirmed here — those three no-op safely if the
-// file_path field isn't present, so this is best-effort, not verified parity.
 // An existing hooks file is merged into, never replaced: someone else's hooks
 // live there too. One that cannot be read is refused rather than overwritten.
 function loadHooksDoc(hooksPath) {
@@ -543,9 +538,15 @@ function loadHooksDoc(hooksPath) {
   return doc
 }
 
-function hookInstallCodex() {
-  const dir = '.codex'
-  const hooksPath = join(dir, 'hooks.json')
+// Codex CLI's hook schema is the same shape as Claude Code's (confirmed against
+// developers.openai.com/codex/hooks: PreToolUse fires with tool_input.command for
+// Bash, exit 2 blocks). Command-sentinel and leak-sentinel run on that shape as-is.
+// File sentinels extract surviving paths from Codex's apply_patch command.
+// Contract tests cover these payloads; live harness delivery is a separate check.
+function hookInstallCodex(options = [], host = 'codex') {
+  if (options.some(option => option !== '--context')) die('usage: omit hook install codex [--context]')
+  const dir = host === 'claude' ? '.claude' : '.codex'
+  const hooksPath = join(dir, host === 'claude' ? 'settings.json' : 'hooks.json')
   mkdirSync(dir, { recursive: true })
   const doc = loadHooksDoc(hooksPath)
 
@@ -563,16 +564,22 @@ function hookInstallCodex() {
 
   mergeHook('PreToolUse', 'Bash', 'command-sentinel.mjs')
   mergeHook('PreToolUse', 'Bash', 'leak-sentinel.mjs')
+  mergeHook('PostToolUse', 'Bash', 'dep-sentinel.mjs')
+  mergeHook('PostToolUse', 'Bash', 'hazard-sentinel.mjs')
   mergeHook('PostToolUse', 'apply_patch|Edit|Write', 'dep-sentinel.mjs')
   mergeHook('PostToolUse', 'apply_patch|Edit|Write', 'hazard-sentinel.mjs')
   mergeHook('PostToolUse', 'apply_patch|Edit|Write', 'lint-sentinel.mjs')
   mergeHook('Stop', '', 'final-draft-gate.mjs')
+  if (options.includes('--context')) {
+    mergeHook('PreToolUse', 'Bash', 'context-sentinel.mjs')
+    mergeHook('PostToolUse', 'Bash', 'context-sentinel.mjs')
+  }
 
   writeFileSync(hooksPath, JSON.stringify(doc, null, 2) + '\n')
   console.log(`wrote ${hooksPath}`)
   console.log('  verified against Codex\'s documented schema: command sentinel + leak sentinel run on Bash commands (same tool_input.command shape as Claude Code)')
-  console.log('  best-effort, unverified: dep/hazard/lint sentinels + Final Draft gate on apply_patch/Edit/Write — they no-op safely if the field shape differs, report back if you see them miss real edits')
-  console.log('\nCodex requires trusting new hook definitions once per session: run `/hooks` in Codex to review, or start with --dangerously-bypass-hook-trust for unattended runs.')
+  console.log('  file sentinels cover apply_patch/Edit/Write; dependency and hazard checks also cover Bash edits. Payload tests do not establish live Codex hook delivery.')
+  console.log(`\nReview the installed hooks in ${host}; installation does not prove live delivery.`)
 }
 
 // The gate goes in the repository's own hooks directory — always, never into
@@ -740,17 +747,28 @@ try {
   else if (cmd === 'leak') leak(rest)
   else if (cmd === 'verify') verify()
   else if (cmd === 'codemode') await codemode(rest)
-  else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === 'codex') hookInstallCodex()
+  else if (cmd === 'context') {
+    if (rest.length) die('usage: omit context < hook-payload.json')
+    await import('../hooks/context-sentinel.mjs')
+  }
+  else if (cmd === 'doctor') {
+    if (rest.some(arg => arg !== '--json')) die('usage: omit doctor [--json]')
+    const report = doctor(cwd)
+    console.log(rest.includes('--json') ? JSON.stringify(report, null, 2) : ['omit doctor (read-only; live delivery unverified)', ...report.findings.map(f => `${f.level}: ${f.message}`)].join('\n'))
+    if (report.findings.some(f => f.level === 'error')) process.exitCode = 1
+  }
+  else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === 'codex') hookInstallCodex(rest.slice(2))
+  else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === 'claude') hookInstallCodex(rest.slice(2), 'claude')
   else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === 'ribhu') hookInstallRibhu()
   else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === undefined) hookInstall()
   else if (cmd === 'hook' && rest[0] === 'install') {
-    console.error(`omit: unrecognized 'hook install' target '${rest[1]}' — usage: omit hook install [codex|ribhu]`)
+    console.error(`omit: unrecognized 'hook install' target '${rest[1]}' — usage: omit hook install [codex|claude|ribhu]`)
     process.exit(1)
   }
   else if (cmd === 'init') init(rest[0])
   else if (targets[cmd]) init(cmd) // back-compat: `omit cursor`
   else {
-    console.error('usage: omit <init|audit|check|gate|lint|guard|leak|verify|codemode|hook install [codex|ribhu]>')
+    console.error('usage: omit <init|audit|check|gate|lint|guard|leak|verify|codemode|context|doctor [--json]|hook install [codex|claude|ribhu] [--context]>')
     process.exit(cmd ? 1 : 0)
   }
 } catch (e) {
