@@ -1,0 +1,21 @@
+name: omit
+
+on: pull_request
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  omit:
+    runs-on: ubuntu-latest
+    # A fork's PR gets a read-only token, so the comment could only fail there.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # `./`, not a tag: this runs the PR's own action.yml end to end, which
+      # nothing else does — test.yml only proves the file parses.
+      - uses: ./

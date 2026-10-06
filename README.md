@@ -119,14 +119,16 @@ And server-side, the GitHub Action comments the verdict on every PR regardless o
 ```yaml
 # .github/workflows/omit.yml
 on: pull_request
-permissions: { pull-requests: write }
+permissions: { contents: read, pull-requests: write }
 jobs:
   omit:
     runs-on: ubuntu-latest
+    # A fork's PR gets a read-only token, so the comment could only fail there.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: sriinnu/omit@main
+      - uses: sriinnu/omit@v0.4.1
         # with: { exec: true }   # execute receipts' `run` snippets to verify them
                                  # fully. Off by default: a PR's receipts are
                                  # untrusted code, and this runs on pull requests.
