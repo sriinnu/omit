@@ -3,6 +3,7 @@
 // main requires PRs, so the version bump rides one: branch → PR → merge →
 // tag the merge → push the tag (publish.yml publishes to npm with
 // provenance) → GitHub release → Homebrew tap formula.
+// A run that stopped partway is finished by running the same command again.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -22,24 +23,43 @@ const fail = (msg) => {
   console.error(`release: ${msg}`);
   process.exit(1);
 };
+// a question that is allowed the answer "no": never throws
+const probe = (cmd, args) => spawnSync(cmd, args, { encoding: "utf8" });
 
-// `gh pr checks` exits 8 while checks are pending and 1 before any are
-// reported, so read its JSON without letting the exit status throw.
-// A PR that reports no checks after a minute has none to wait for.
-const waitForChecks = (pr, repo) => {
+// Wait until GitHub itself says the PR can merge. This used to guess: a PR
+// reporting no checks after a minute was taken to have none, and on a day
+// Actions took two minutes to start them, the release tried to merge before
+// the required check existed. mergeStateStatus is the branch policy's own
+// answer: BLOCKED while a required check is missing or pending, CLEAN once
+// nothing is. `gh pr checks` exits 8 while checks are pending and 1 before
+// any are reported, so its JSON is read without trusting the exit status.
+const waitUntilMergeable = (pr, repo) => {
   for (let i = 0; i < 80; i++) {
-    const res = spawnSync("gh", ["pr", "checks", pr, "-R", repo, "--json", "bucket"],
-      { encoding: "utf8" });
     let buckets = [];
-    try { buckets = JSON.parse(res.stdout).map((c) => c.bucket); } catch {}
+    try {
+      buckets = JSON.parse(probe("gh", ["pr", "checks", pr, "-R", repo, "--json", "bucket"]).stdout)
+        .map((c) => c.bucket);
+    } catch {}
     if (buckets.some((b) => ["fail", "cancel"].includes(b)))
       fail(`${repo}#${pr} checks failed`);
-    if (buckets.length && buckets.every((b) => ["pass", "skipping"].includes(b))) return;
-    if (!buckets.length && i >= 4) return;
+    const state = probe("gh", ["pr", "view", pr, "-R", repo,
+      "--json", "mergeStateStatus", "--jq", ".mergeStateStatus"]).stdout.trim();
+    if (state === "DIRTY") fail(`${repo}#${pr} conflicts with its base branch`);
+    if (state === "CLEAN" && buckets.every((b) => ["pass", "skipping"].includes(b))) return;
     sleep(15);
   }
-  fail(`${repo}#${pr} checks still pending after 20 minutes`);
+  fail(`${repo}#${pr} still not mergeable after 20 minutes`);
 };
+
+// What a finished release leaves behind, each asked of the place it lives.
+const onRemote = (tag) =>
+  out("git", ["ls-remote", "--tags", "origin", `refs/tags/${tag}`]) !== "";
+const onNpm = (pkg, version) =>
+  probe("npm", ["view", `${pkg}@${version}`, "version"]).stdout.trim() === version;
+const hasRelease = (tag) => probe("gh", ["release", "view", tag]).status === 0;
+const inTap = (version) => Buffer.from(
+  probe("gh", ["api", "repos/sriinnu/homebrew-tap/contents/Formula/omit.rb", "--jq", ".content"]).stdout,
+  "base64").toString().includes(`/omit-${version}.tgz`);
 
 // --- preflight
 if (out("git", ["branch", "--show-current"]) !== "main")
@@ -50,60 +70,78 @@ if (out("git", ["rev-parse", "HEAD"]) !== out("git", ["rev-parse", "origin/main"
   fail("main is not in sync with origin/main");
 run("gh", ["auth", "status"]);
 
+// --- a release that stopped partway leaves main at a version that is not
+// fully out. Running again finishes that one: each step below is skipped
+// where its result already exists, and nothing is bumped a second time.
+const pkg = out("node", ["-p", "require('./package.json').name"]);
+const current = out("node", ["-p", "require('./package.json').version"]);
+const resuming = !(onRemote(`v${current}`) && onNpm(pkg, current)
+  && hasRelease(`v${current}`) && inTap(current));
+if (resuming)
+  console.log(`release: ${current} is on main but not fully released; finishing it (${bump} ignored)`);
 // --- bump without tagging (tests run via preversion); the tag comes later,
 // on the merged commit, so it points at what main actually contains
-run("npm", ["version", bump, "--no-git-tag-version"]);
+else run("npm", ["version", bump, "--no-git-tag-version"]);
 const version = out("node", ["-p", "require('./package.json').version"]);
 const tag = `v${version}`;
-const pkg = out("node", ["-p", "require('./package.json').name"]);
-// the plugin manifest carries the version too, and `npm version` does not
-// know it; the commit below picks the edit up, and a test holds the two equal
-const manifest = ".claude-plugin/plugin.json";
-writeFileSync(manifest, readFileSync(manifest, "utf8")
-  .replace(/"version": "[^"]*"/, `"version": "${version}"`));
-// the docs pin the Action to a release, and GitHub Marketplace shows main's
-// README, so the pins move to the tag being cut
-for (const doc of ["README.md", "GETTING-STARTED.md"])
-  writeFileSync(doc, readFileSync(doc, "utf8")
-    .replaceAll(/sriinnu\/omit@v\d+\.\d+\.\d+/g, `sriinnu/omit@${tag}`));
 
-// --- the version bump rides a PR; main does not take direct pushes
-const branch = `release/${tag}`;
-run("git", ["switch", "-c", branch]);
-run("git", ["commit", "-am", `Release ${tag}`]);
-run("git", ["push", "-u", "origin", branch]);
-const pr = out("gh", [
-  "pr", "create", "--title", `Release ${tag} — version bump`,
-  "--body", `Cut by scripts/release.mjs. Tag and publish follow the merge.`,
-]);
-const prNumber = pr.split("/").pop();
-waitForChecks(prNumber, "sriinnu/omit");
-run("gh", ["pr", "merge", prNumber, "--squash", "--delete-branch"]);
+if (!resuming) {
+  // the plugin manifest carries the version too, and `npm version` does not
+  // know it; the commit below picks the edit up, and a test holds the two equal
+  const manifest = ".claude-plugin/plugin.json";
+  writeFileSync(manifest, readFileSync(manifest, "utf8")
+    .replace(/"version": "[^"]*"/, `"version": "${version}"`));
+  // the docs pin the Action to a release, and GitHub Marketplace shows main's
+  // README, so the pins move to the tag being cut
+  for (const doc of ["README.md", "GETTING-STARTED.md"])
+    writeFileSync(doc, readFileSync(doc, "utf8")
+      .replaceAll(/sriinnu\/omit@v\d+\.\d+\.\d+/g, `sriinnu/omit@${tag}`));
 
-run("git", ["switch", "main"]);
-run("git", ["pull", "origin", "main"]);
-if (out("node", ["-p", "require('./package.json').version"]) !== version)
-  fail(`main does not contain ${version} after the merge — refusing to tag`);
+  // --- the version bump rides a PR; main does not take direct pushes
+  const branch = `release/${tag}`;
+  run("git", ["switch", "-c", branch]);
+  run("git", ["commit", "-am", `Release ${tag}`]);
+  run("git", ["push", "-u", "origin", branch]);
+  const pr = out("gh", [
+    "pr", "create", "--title", `Release ${tag} — version bump`,
+    "--body", `Cut by scripts/release.mjs. Tag and publish follow the merge.`,
+  ]);
+  const prNumber = pr.split("/").pop();
+  waitUntilMergeable(prNumber, "sriinnu/omit");
+  run("gh", ["pr", "merge", prNumber, "--squash", "--delete-branch"]);
+
+  run("git", ["switch", "main"]);
+  run("git", ["pull", "origin", "main"]);
+  if (out("node", ["-p", "require('./package.json').version"]) !== version)
+    fail(`main does not contain ${version} after the merge — refusing to tag`);
+}
 
 // --- tag the merge and push the tag; publish.yml takes it from here
-run("git", ["tag", "-m", version, tag]);
-run("git", ["push", "origin", tag]);
-
-// --- watch the publish workflow; a failed publish aborts the release
-let runId = null;
-for (let i = 0; i < 30 && !runId; i++) {
-  const runs = JSON.parse(
-    out("gh", ["run", "list", "--workflow", "publish.yml", "--branch", tag,
-      "--json", "databaseId", "--limit", "1"]),
-  );
-  if (runs.length) runId = runs[0].databaseId;
-  else sleep(2);
+if (!onRemote(tag)) {
+  if (probe("git", ["rev-parse", "-q", "--verify", `refs/tags/${tag}`]).status)
+    run("git", ["tag", "-m", version, tag]);
+  run("git", ["push", "origin", tag]);
 }
-if (!runId) fail("publish workflow never started for the tag");
-run("gh", ["run", "watch", String(runId), "--exit-status", "--interval", "10"]);
+
+// --- watch the publish workflow; a failed publish aborts the release.
+// Actions can take minutes to create the run, so this waits ten, not one.
+if (!onNpm(pkg, version)) {
+  let runId = null;
+  for (let i = 0; i < 120 && !runId; i++) {
+    const runs = JSON.parse(
+      out("gh", ["run", "list", "--workflow", "publish.yml", "--branch", tag,
+        "--json", "databaseId", "--limit", "1"]),
+    );
+    if (runs.length) runId = runs[0].databaseId;
+    else sleep(5);
+  }
+  if (!runId) fail("publish workflow never started for the tag");
+  run("gh", ["run", "watch", String(runId), "--exit-status", "--interval", "10"]);
+}
 
 // --- GitHub release
-run("gh", ["release", "create", tag, "--verify-tag", "--generate-notes"]);
+if (!hasRelease(tag))
+  run("gh", ["release", "create", tag, "--verify-tag", "--generate-notes"]);
 
 // --- wait for npm to serve the version (registry read-replica lag)
 let live = false;
@@ -164,7 +202,7 @@ if (out("git", ["-C", tap, "status", "--porcelain"])) {
   const tapPr = out("gh", ["pr", "create", "-R", "sriinnu/homebrew-tap",
     "--head", tapBranch, "--title", `omit ${version}`,
     "--body", "Cut by sriinnu/omit scripts/release.mjs."]).split("/").pop();
-  waitForChecks(tapPr, "sriinnu/homebrew-tap");
+  waitUntilMergeable(tapPr, "sriinnu/homebrew-tap");
   run("gh", ["pr", "merge", tapPr, "-R", "sriinnu/homebrew-tap", "--squash", "--delete-branch"]);
 }
 
