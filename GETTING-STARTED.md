@@ -120,7 +120,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: sriinnu/omit@v0.5.0
+      - uses: sriinnu/omit@v0.6.0
 ```
 
 Comments the verdict (net lines, new deps, hazards, lint) on every PR.
