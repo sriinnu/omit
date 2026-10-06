@@ -5,7 +5,7 @@
 // provenance) → GitHub release → Homebrew tap formula.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -56,6 +56,11 @@ run("npm", ["version", bump, "--no-git-tag-version"]);
 const version = out("node", ["-p", "require('./package.json').version"]);
 const tag = `v${version}`;
 const pkg = out("node", ["-p", "require('./package.json').name"]);
+// the plugin manifest carries the version too, and `npm version` does not
+// know it; the commit below picks the edit up, and a test holds the two equal
+const manifest = ".claude-plugin/plugin.json";
+writeFileSync(manifest, readFileSync(manifest, "utf8")
+  .replace(/"version": "[^"]*"/, `"version": "${version}"`));
 
 // --- the version bump rides a PR; main does not take direct pushes
 const branch = `release/${tag}`;
@@ -114,6 +119,10 @@ const tgz = join(tmp, "pkg.tgz");
 run("curl", ["-fsSL", tarball, "-o", tgz]);
 const sha256 = out("shasum", ["-a", "256", tgz]).split(" ")[0];
 
+// codemode's sandbox, at the range package.json declares for it
+const peer = "@earendil-works/pi-codemode";
+const sandbox = `${peer}@${out("node", ["-p", `require('./package.json').peerDependencies['${peer}']`])}`;
+
 const tap = join(tmp, "tap");
 run("gh", ["repo", "clone", "sriinnu/homebrew-tap", tap, "--", "--depth", "1"]);
 mkdirSync(join(tap, "Formula"), { recursive: true });
@@ -127,12 +136,16 @@ writeFileSync(join(tap, "Formula", "omit.rb"), `class Omit < Formula
   depends_on "node"
 
   def install
-    system "npm", "install", *std_npm_args
+    # codemode's sandbox is an optional peer, so npm leaves it out unless it
+    # is named, and Node resolves it from this prefix only: one installed
+    # globally with npm is not on the path.
+    system "npm", "install", *std_npm_args, "${sandbox}"
     bin.install_symlink libexec.glob("bin/*")
   end
 
   test do
     assert_match "usage: omit", shell_output(bin/"omit")
+    assert_equal "2\\n", pipe_output("#{bin}/omit codemode run", "return 1 + 1")
   end
 end
 `);

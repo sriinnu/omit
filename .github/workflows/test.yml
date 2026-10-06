@@ -59,7 +59,7 @@ jobs:
 
   # The sandbox is an optional peer, so `npm test` above never installs it and
   # the end-to-end case there is announced as skipped. This job is where a real
-  # script runs in the real sandbox.
+  # script runs in the real sandbox, at the version the lockfile pins.
   codemode:
     runs-on: ubuntu-latest
     steps:
@@ -69,7 +69,7 @@ jobs:
         with:
           node-version: "22"
 
-      - run: npm install --no-save @earendil-works/pi-codemode
+      - run: npm ci
 
       - run: node --test test/codemode.test.mjs
         env:
