@@ -152,12 +152,14 @@ jobs:
 
 ## Codemode (experimental)
 
-An agent exploring a repo pays for every intermediate result: each read and each grep is a round-trip whose raw output lands in the transcript and is sent again on every later turn. `omit codemode` is an MCP server with one tool. The model writes a script, the reads happen inside it, and only what the script returns comes back.
+An agent exploring a repo pays for every intermediate result: each read and each grep is a round-trip whose raw output lands in the transcript and is sent again on every later turn. With `omit codemode` the model writes a script, the reads happen inside it, and only what the script returns comes back.
 
-```js
+```sh
+omit codemode run <<'EOF'
 const libs = (await tools.files({ under: 'lib' })).filter((f) => f.endsWith('.mjs'))
 const sources = await Promise.all(libs.map((path) => tools.read({ path })))
 return Object.fromEntries(libs.map((f, i) => [f, (sources[i].match(/^export /gm) ?? []).length]))
+EOF
 ```
 
 - **Read-only.** Three tools: `files`, `read`, `grep`. They read the tree through git, so ignored files stay out, and every path is confined to the directory the server started in: no `..`, no absolute path, no symlink out.
@@ -169,6 +171,13 @@ The sandbox is an optional peer that only this command loads, so `omit` itself s
 
 ```
 npm install -g @sriinnu/omit @earendil-works/pi-codemode
+```
+
+Any agent with a shell can use it as it stands: `omit codemode run` takes a script on stdin or from a file and prints the answer, and the `omit-codemode` skill (`skills/omit-codemode/SKILL.md`) teaches the agent when to reach for it and what a script can call. Nothing has to be registered.
+
+For a host without a shell, or one where you would rather approve a single read-only tool, the same thing is an MCP server on stdio:
+
+```
 claude mcp add omit -- omit codemode        # Claude Code
 ```
 

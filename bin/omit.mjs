@@ -10,7 +10,8 @@
 //   omit leak "<cmd>"                                     would this command print a real secret to stdout?
 //   omit hook install                                     add the gate to .git/hooks/pre-commit
 //   omit hook install codex                                write .codex/hooks.json (live sentinels inside Codex CLI)
-//   omit codemode                                         MCP server (stdio): sandboxed scripts over read-only repo tools
+//   omit codemode run [file]                              run one sandboxed script over read-only repo tools (stdin without a file)
+//   omit codemode                                         the same, as an MCP server on stdio
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, chmodSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,7 +22,7 @@ import { findHazards } from '../lib/hazards.mjs'
 import { lintFiles } from '../lib/lint.mjs'
 import { assessCommand } from '../lib/danger.mjs'
 import { assessLeak } from '../lib/leaks.mjs'
-import { serve } from '../lib/codemode.mjs'
+import { execute, serve } from '../lib/codemode.mjs'
 
 const cwd = process.cwd()
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -663,7 +664,8 @@ function verify() {
 // ---------- codemode ----------
 // The sandbox is an optional peer, loaded here and nowhere else: every other
 // command has to keep working on a machine that never installed it.
-async function codemode() {
+async function codemode(args) {
+  if (args.length && args[0] !== 'run') die('usage: omit codemode [run [file]]')
   let sandbox
   try {
     sandbox = await import('@earendil-works/pi-codemode')
@@ -671,8 +673,18 @@ async function codemode() {
     if (e.code !== 'ERR_MODULE_NOT_FOUND') throw e
     die('omit codemode needs its sandbox, which is not installed. Run: npm install @earendil-works/pi-codemode (it needs Node 22.19 or newer)')
   }
+  const root = realpathSync(cwd)
+  // `run` is the whole feature for any agent that has a shell: one script in,
+  // one answer out, no server to register. Exit 1 marks a failed or withheld
+  // result, so a harness can tell it from an answer.
+  if (args[0] === 'run') {
+    const { text, isError } = await execute(readFileSync(args[1] ?? 0, 'utf8'), { CodemodeSandbox: sandbox.CodemodeSandbox, root })
+    console.log(text)
+    process.exitCode = isError ? 1 : 0
+    return
+  }
   const { version } = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'))
-  serve({ sandbox, root: realpathSync(cwd), version })
+  serve({ sandbox, root, version })
 }
 
 const [cmd, ...rest] = process.argv.slice(2)
@@ -684,7 +696,7 @@ try {
   else if (cmd === 'guard') guard(rest)
   else if (cmd === 'leak') leak(rest)
   else if (cmd === 'verify') verify()
-  else if (cmd === 'codemode') await codemode()
+  else if (cmd === 'codemode') await codemode(rest)
   else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === 'codex') hookInstallCodex()
   else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === undefined) hookInstall()
   else if (cmd === 'hook' && rest[0] === 'install') {

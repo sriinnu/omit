@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -80,6 +80,15 @@ test('a long result keeps its head and tail and says how much was cut', () => {
   assert.ok(r.text.startsWith('HEAD') && r.text.endsWith('TAIL'))
   assert.match(r.text, /\[omit: 30008 characters cut here/)
   assert.equal(shape('', false).text, '(no output: return a value or call text())')
+})
+
+// The skill is what teaches an agent the script API, so it is pinned to the
+// tools: add or rename one and this fails before an agent is taught a call that
+// does not exist.
+test('the codemode skill documents exactly the tools a script can call', () => {
+  const skill = readFileSync(new URL('../skills/omit-codemode/SKILL.md', import.meta.url), 'utf8')
+  const documented = [...skill.matchAll(/^\| `tools\.(\w+)\(/gm)].map((m) => m[1])
+  assert.deepEqual(documented, toolsFor('/work').map((t) => t.name))
 })
 
 // One JSON-RPC exchange against serve(), with a sandbox that records what it
@@ -180,6 +189,32 @@ test('omit codemode without its sandbox says how to get it and exits 1', { skip:
   const code = await new Promise((r) => child.on('close', r))
   assert.equal(code, 1)
   assert.match(stderr, /npm install @earendil-works\/pi-codemode/)
+})
+
+// `run` is the same feature without a server: what an agent with a shell uses.
+// stdout is the answer and the exit status says whether there is one.
+test('omit codemode run: one script in on stdin, one answer out, exit 1 when there is none', { skip: !installed && 'the optional peer @earendil-works/pi-codemode is not installed, so the sandbox was NOT exercised' }, async () => {
+  const dir = repo()
+  const run = (args, input) =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, [BIN, 'codemode', ...args], { cwd: dir, env: ENV, stdio: ['pipe', 'pipe', 'pipe'] })
+      let stdout = ''
+      let stderr = ''
+      child.stdout.on('data', (d) => (stdout += d))
+      child.stderr.on('data', (d) => (stderr += d))
+      child.on('close', (code) => resolve({ code, stdout, stderr }))
+      child.stdin.end(input ?? '')
+    })
+  assert.deepEqual(await run(['run'], `return (await tools.files({ under: 'src' })).length`), { code: 0, stdout: '2\n', stderr: '' })
+  // The script lives outside the workspace: inside, it would match its own pattern.
+  const file = join(dir, '..', 'q.js')
+  writeFileSync(file, `return (await tools.grep({ pattern: 'needle' })).map((h) => h.line)`)
+  assert.deepEqual(JSON.parse((await run(['run', file])).stdout), [2, 1])
+  const refused = await run(['run'], `return await tools.read({ path: '../outside.txt' })`)
+  assert.equal(refused.code, 1)
+  assert.match(refused.stdout, /outside the workspace/)
+  const unknown = await run(['serve'])
+  assert.deepEqual([unknown.code, unknown.stderr], [1, 'omit: usage: omit codemode [run [file]]\n'])
 })
 
 test('omit codemode end to end: a real script, in the real sandbox, over stdio', { skip: !installed && 'the optional peer @earendil-works/pi-codemode is not installed, so the sandbox was NOT exercised' }, async () => {
