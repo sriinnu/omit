@@ -54,6 +54,14 @@
     "type": "git",
     "url": "https://github.com/sriinnu/omit.git"
   },
+  "peerDependencies": {
+    "@earendil-works/pi-codemode": "^1.0.4"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-codemode": {
+      "optional": true
+    }
+  },
   "publishConfig": {
     "access": "public"
   },

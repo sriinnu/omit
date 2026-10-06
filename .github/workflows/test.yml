@@ -56,3 +56,21 @@ jobs:
               assert meta.get("description"), f"{path}: frontmatter has no description"
               print(f"{path}: frontmatter parses")
           PY
+
+  # The sandbox is an optional peer, so `npm test` above never installs it and
+  # the end-to-end case there is announced as skipped. This job is where a real
+  # script runs in the real sandbox.
+  codemode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - run: npm install --no-save @earendil-works/pi-codemode
+
+      - run: node --test test/codemode.test.mjs
+        env:
+          OMIT_CODEMODE_REQUIRED: "1"

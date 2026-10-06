@@ -150,6 +150,41 @@ jobs:
 // the receipts; a single number would just be another uncited claim.
 ```
 
+## Codemode (experimental)
+
+An agent exploring a repo pays for every intermediate result: each read and each grep is a round-trip whose raw output lands in the transcript and is sent again on every later turn. `omit codemode` is an MCP server with one tool. The model writes a script, the reads happen inside it, and only what the script returns comes back.
+
+```js
+const libs = (await tools.files({ under: 'lib' })).filter((f) => f.endsWith('.mjs'))
+const sources = await Promise.all(libs.map((path) => tools.read({ path })))
+return Object.fromEntries(libs.map((f, i) => [f, (sources[i].match(/^export /gm) ?? []).length]))
+```
+
+- **Read-only.** Three tools: `files`, `read`, `grep`. They read the tree through git, so ignored files stay out, and every path is confined to the directory the server started in: no `..`, no absolute path, no symlink out.
+- **Sandboxed.** The script runs in a QuickJS VM compiled to wasm ([`@earendil-works/pi-codemode`](https://www.npmjs.com/package/@earendil-works/pi-codemode), the sandbox behind pi's codemode): no file system, no network, no `process`. `node:vm` is not isolation, and the receipt for this dependency runs the escape to show it.
+- **Secrets stay in.** A script may read a credentials file; it may not return it. Output that matches a secret rule is withheld whole.
+- **Bounded.** A script has 60 seconds, and output past 20,000 characters loses its middle.
+
+The sandbox is an optional peer that only this command loads, so `omit` itself still installs zero dependencies. It needs Node 22.19 or newer.
+
+```
+npm install -g @sriinnu/omit @earendil-works/pi-codemode
+claude mcp add omit -- omit codemode        # Claude Code
+```
+
+```toml
+# Codex: ~/.codex/config.toml
+[mcp_servers.omit]
+command = "omit"
+args = ["codemode"]
+```
+
+```
+// omitted: write and edit tools: a nested write is not seen by the host's
+// hooks, so it has to carry the hazard, dependency and lint gates itself. Add
+// them once bench/ shows the read side pays for the surface.
+```
+
 ## The referee (experimental)
 
 `bench/` is METHODOLOGY.md made runnable: paired agentic runs of the same tasks under baseline, omit, or **any competing skill**, metrics computed from the actual git diffs, all transcripts kept. The category argues about self-reported numbers; omit ships the measuring instrument. See `bench/README.md`.
@@ -221,9 +256,9 @@ skills/omit/SKILL.md  →  .claude/skills/omit/SKILL.md      (project)
 **Anything else**: paste the contents of `AGENTS.md` into the agent's custom-instructions/rules mechanism. It's plain markdown; there is nothing to build.
 
 ```
-// omitted: an MCP server: MCP exposes tools and data; omit is a behavioral
-// discipline, and rule files + skills already deliver it. Add one only if
-// omit ever grows verifiable tooling (e.g., a standalone diff auditor).
+// omitted: the discipline itself over MCP: MCP exposes tools and data; omit is
+// a behavioral discipline, and rule files + skills already deliver it. The one
+// MCP server omit ships is codemode, which is tooling.
 ```
 
 ## Commands (Claude Code)

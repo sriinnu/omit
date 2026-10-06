@@ -10,7 +10,8 @@
 //   omit leak "<cmd>"                                     would this command print a real secret to stdout?
 //   omit hook install                                     add the gate to .git/hooks/pre-commit
 //   omit hook install codex                                write .codex/hooks.json (live sentinels inside Codex CLI)
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs'
+//   omit codemode                                         MCP server (stdio): sandboxed scripts over read-only repo tools
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, chmodSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isManifest, addedDeps, unparsedDependencyFile } from '../lib/deps.mjs'
@@ -20,6 +21,7 @@ import { findHazards } from '../lib/hazards.mjs'
 import { lintFiles } from '../lib/lint.mjs'
 import { assessCommand } from '../lib/danger.mjs'
 import { assessLeak } from '../lib/leaks.mjs'
+import { serve } from '../lib/codemode.mjs'
 
 const cwd = process.cwd()
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -658,6 +660,21 @@ function verify() {
 // on purpose: a verdict rendered from a diff that could not be read is the
 // failure this whole contract exists to prevent, and a gate that cannot read the
 // change has to block it rather than pass it.
+// ---------- codemode ----------
+// The sandbox is an optional peer, loaded here and nowhere else: every other
+// command has to keep working on a machine that never installed it.
+async function codemode() {
+  let sandbox
+  try {
+    sandbox = await import('@earendil-works/pi-codemode')
+  } catch (e) {
+    if (e.code !== 'ERR_MODULE_NOT_FOUND') throw e
+    die('omit codemode needs its sandbox, which is not installed. Run: npm install @earendil-works/pi-codemode (it needs Node 22.19 or newer)')
+  }
+  const { version } = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'))
+  serve({ sandbox, root: realpathSync(cwd), version })
+}
+
 const [cmd, ...rest] = process.argv.slice(2)
 try {
   if (cmd === 'audit') audit(rest)
@@ -667,6 +684,7 @@ try {
   else if (cmd === 'guard') guard(rest)
   else if (cmd === 'leak') leak(rest)
   else if (cmd === 'verify') verify()
+  else if (cmd === 'codemode') await codemode()
   else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === 'codex') hookInstallCodex()
   else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === undefined) hookInstall()
   else if (cmd === 'hook' && rest[0] === 'install') {
@@ -676,7 +694,7 @@ try {
   else if (cmd === 'init') init(rest[0])
   else if (targets[cmd]) init(cmd) // back-compat: `omit cursor`
   else {
-    console.error('usage: omit <init|audit|check|gate|lint|guard|leak|verify|hook install|hook install codex>')
+    console.error('usage: omit <init|audit|check|gate|lint|guard|leak|verify|codemode|hook install|hook install codex>')
     process.exit(cmd ? 1 : 0)
   }
 } catch (e) {
