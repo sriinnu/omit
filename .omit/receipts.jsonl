@@ -1,6 +1,5 @@
-{"claim":"reuse","rung":2,"file":".github/workflows/publish.yml","line":50,"symbol":"npm publish --access public --provenance"}
+{"claim":"reuse","rung":2,"file":".github/workflows/publish.yml","line":66,"symbol":"npm publish --access public"}
 {"claim":"stdlib","rung":3,"api":"npm version","run":["npm","version","--help"]}
 {"claim":"stdlib","rung":3,"api":"curl","run":["curl","--version"]}
 {"claim":"stdlib","rung":3,"api":"shasum","run":["shasum","-a","256","/dev/null"]}
-{"claim":"stdlib","rung":3,"api":"gh secret set","run":["gh","secret","set","--help"]}
 {"claim":"new-dep","rung":7,"dep":"@earendil-works/pi-codemode","tried":[{"rung":2,"absent":"node:worker_threads"},{"rung":3,"api":"node:vm","run":["node","-e","const p = require(\"node:vm\").runInNewContext(\"this.constructor.constructor(\\\"return process\\\")()\"); process.exit(p === process ? 1 : 0)"]},{"rung":5,"dep":"isolated-vm","run":["node","-e","require(\"isolated-vm\")"]}]}

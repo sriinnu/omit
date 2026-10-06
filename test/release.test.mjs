@@ -13,11 +13,9 @@ const json = (rel) => JSON.parse(readFileSync(path(rel), 'utf8'))
 // The Homebrew formula is a template literal inside the script, so one stray
 // backtick in the Ruby ends the string and the script stops parsing. That
 // shipped as far as a commit once, and would have surfaced on release day.
-for (const script of ['scripts/release.mjs', 'scripts/sync-token.mjs']) {
-  test(`${script} parses`, () => {
-    execFileSync(process.execPath, ['--check', path(script)], { stdio: 'pipe' })
-  })
-}
+test('scripts/release.mjs parses', () => {
+  execFileSync(process.execPath, ['--check', path('scripts/release.mjs')], { stdio: 'pipe' })
+})
 
 // Claude Code reads the plugin's version from its manifest, not from
 // package.json, and nothing kept the two together: the manifest sat a release

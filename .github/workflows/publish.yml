@@ -5,6 +5,11 @@ on:
     tags:
       - "v*.*.*"
 
+# No npm token anywhere. npm's trusted publishing has this workflow prove who
+# it is with a short-lived OIDC token GitHub mints for the run (that is what
+# id-token: write allows), and npm checks it against the publisher configured
+# for the package: sriinnu/omit, publish.yml. A stored token expired twice and
+# stopped two releases after their tags were already pushed.
 permissions:
   contents: read
   id-token: write
@@ -17,8 +22,20 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing needs npm 11.5.1 or later. An older npm does not
+      # fail by saying so: it sends no credentials and the registry answers
+      # 404, which reads as a missing package. Say it here instead.
+      - name: npm is new enough for trusted publishing
+        run: |
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number)
+            const older = major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))
+            if (older) { console.error(`npm ${process.argv[1]} cannot do trusted publishing: it needs 11.5.1 or later`); process.exit(1) }
+            console.log(`npm ${process.argv[1]}`)
+          ' "$(npm --version)"
 
       - name: Verify tag matches package.json version
         run: |
@@ -44,10 +61,9 @@ jobs:
 
       - name: Publish
         if: steps.check.outputs.already_published == 'false'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if npm publish --access public --provenance; then
+          # The provenance attestation comes with trusted publishing; no flag.
+          if npm publish --access public; then
             echo "Publish succeeded."
             exit 0
           fi

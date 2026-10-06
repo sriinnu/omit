@@ -294,9 +294,12 @@ Never `npm publish` by hand: a local publish cannot attach provenance, and
 npm will not let the same version be republished to add one later. If the CI
 publish fails, fix CI — don't work around it locally.
 
-If the `NPM_TOKEN` secret ever goes stale, put the new token in `~/.npmrc`
-and run `npm run token:sync` — it verifies the token against the registry
-before pushing, so a dead token never reaches CI.
+There is no npm token to keep alive. `publish.yml` uses npm's
+[trusted publishing](https://docs.npmjs.com/trusted-publishers): the workflow
+proves its identity to npm with a short-lived token GitHub mints for that run,
+and npm checks it against the publisher configured in the package's settings
+(GitHub Actions, `sriinnu/omit`, `publish.yml`). If a publish is refused, that
+form is the thing to check.
 
 ## Prior art
 
