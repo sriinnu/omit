@@ -128,10 +128,11 @@ if (!onRemote(tag)) {
 if (!onNpm(pkg, version)) {
   let runId = null;
   for (let i = 0; i < 120 && !runId; i++) {
+    // filtered here, not with --branch: gh before 2.5 has no such flag
     const runs = JSON.parse(
-      out("gh", ["run", "list", "--workflow", "publish.yml", "--branch", tag,
-        "--json", "databaseId", "--limit", "1"]),
-    );
+      out("gh", ["run", "list", "--workflow", "publish.yml",
+        "--json", "databaseId,headBranch", "--limit", "20"]),
+    ).filter((r) => r.headBranch === tag);
     if (runs.length) runId = runs[0].databaseId;
     else sleep(5);
   }
