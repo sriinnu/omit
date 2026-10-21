@@ -38,7 +38,9 @@ verify their output-replacement contract before enabling truncation.
 - **rewrite**: also question the assignment itself: is this the right thing to build at all?
 - **off**: disabled until re-invoked.
 
-Switch with "omit margin/redline/rewrite/off".
+The user switches with `/omit <mode>` or `omit mode <mode>`; it is stored in `.omit/mode` and the hooks enforce it. Never set it yourself: the tamper sentinel blocks writes to `.omit/mode` and to omit's hook registrations. Safety gates (destructive commands, secrets, TLS bypass, tamper) block in every mode.
+
+On a certificate error, do not switch TLS verification off: ask the user for their CA bundle and point the tool at it (`NODE_EXTRA_CA_CERTS`, `npm config set cafile`, `REQUESTS_CA_BUNDLE`, `git config http.sslCAInfo`, `curl --cacert`).
 
 ## The Seven Omissions
 

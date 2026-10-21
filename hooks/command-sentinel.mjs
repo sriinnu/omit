@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 // PreToolUse hook: assesses shell commands BEFORE they execute and blocks the
 // classic agent disasters (recursive deletes of home/system paths, deletes
-// through unset variables, disk overwrites). The user's machine is load-bearing.
+// through unset variables, disk overwrites, git commands that discard work or
+// skip its hooks) and commands that switch TLS verification off. The user's
+// machine is load-bearing.
 import { readFileSync } from 'node:fs'
 import { assessCommand } from '../lib/danger.mjs'
+import { MAX_COMMAND, TOO_LONG } from '../lib/hazards.mjs'
+import { TLS_FIX } from '../lib/tls.mjs'
 
 if (process.env.OMIT_OFF === '1') process.exit(0)
 
@@ -39,14 +43,20 @@ try {
     )
   }
 
+  if (command.length > MAX_COMMAND) block(TOO_LONG)
   const findings = assessCommand(command)
   if (findings.length === 0) process.exit(0)
 
+  // The advice follows the finding: a cert bypass has a real fix, a discarded
+  // tree or a skipped hook needs the user, a wide delete needs a narrower target.
+  const has = (re) => findings.some((f) => re.test(f.rule))
   console.error(
     'omit blocks this command: the machine is load-bearing.\n' +
       findings.map((f) => `  [${f.rule}] ${f.reason}`).join('\n') +
-      '\nUse a narrower target inside the workspace, guard variables with ${VAR:?}, ' +
-      'or, only after genuine review with the user, append: # omit-allow: <reason>'
+      (has(/^tls-/) ? '\n' + TLS_FIX : '') +
+      (has(/^(git-|hook-bypass)/) ? '\nThis discards work or skips the checks on it: ask the user before running it.' : '') +
+      (has(/^(?!tls-|git-|hook-bypass)/) ? '\nUse a narrower target inside the workspace, or guard variables with ${VAR:?}.' : '') +
+      '\nOnly after genuine review with the user, append: # omit-allow: <reason>'
   )
   process.exit(2)
 } catch (e) {

@@ -71,13 +71,16 @@ test('each matcher selects the Ribhu tools it is meant to, and no others', () =>
   const hooks = hooksOf(repo())
   for (const [event, list] of Object.entries(hooks)) {
     for (const hook of list) {
-      selected[`${event} ${hook.command.split(' ').pop()}`] = hook.matcher ? RIBHU_TOOLS.filter((t) => new RegExp(hook.matcher).test(t)) : 'every turn'
+      // One sentinel can sit behind two matchers (leak before bash and read).
+      const key = `${event} ${hook.command.split(' ').pop()}`
+      selected[key] = hook.matcher ? [...(selected[key] ?? []), ...RIBHU_TOOLS.filter((t) => new RegExp(hook.matcher).test(t))].sort() : 'every turn'
     }
   }
   const files = ['ast_edit', 'edit', 'multi_edit', 'write']
   assert.deepEqual(selected, {
     'PreToolUse command-sentinel': ['bash'],
-    'PreToolUse leak-sentinel': ['bash'],
+    'PreToolUse leak-sentinel': ['bash', 'read'],
+    'PreToolUse tamper-sentinel': ['ast_edit', 'bash', 'edit', 'multi_edit', 'write'],
     // todo_write is not a file write, and an unanchored `write` would catch it.
     'PostToolUse dep-sentinel': ['ast_edit', 'bash', 'edit', 'multi_edit', 'write'],
     'PostToolUse hazard-sentinel': ['ast_edit', 'bash', 'edit', 'multi_edit', 'write'],
@@ -114,12 +117,15 @@ test('before bash: a disaster and a secret leak are blocked with their reason, a
   assert.equal(leak.block?.sentinel, 'leak-sentinel')
 
   const ordinary = fire(dir, 'PreToolUse', { tool: 'bash', input: { command: 'ls -la' } })
-  assert.deepEqual(ordinary.results.map((r) => [r.sentinel, r.status]), [['command-sentinel', 0], ['leak-sentinel', 0]])
+  assert.deepEqual(ordinary.results.map((r) => [r.sentinel, r.status]), [['command-sentinel', 0], ['leak-sentinel', 0], ['tamper-sentinel', 0]])
   // Ribhu reads a hook's stdout as a rewrite of the tool's input: there must be none.
-  assert.deepEqual(ordinary.results.map((r) => r.stdout), ['', ''])
+  assert.deepEqual(ordinary.results.map((r) => r.stdout), ['', '', ''])
 
+  // Ribhu's lowercase `read` reaches the leak sentinel as Read.
+  assert.equal(fire(dir, 'PreToolUse', { tool: 'read', input: { path: '.env' } }).block?.sentinel, 'leak-sentinel')
+  assert.equal(fire(dir, 'PreToolUse', { tool: 'read', input: { path: 'clean.py' } }).block, undefined)
   // A tool no matcher selects reaches no hook at all.
-  assert.deepEqual(fire(dir, 'PreToolUse', { tool: 'read', input: { path: 'clean.py' } }).results, [])
+  assert.deepEqual(fire(dir, 'PreToolUse', { tool: 'glob', input: { pattern: '*' } }).results, [])
 })
 
 test('after a file tool: `input.path` reaches the sentinels as the file they check', () => {
@@ -151,7 +157,7 @@ test('on Stop: an edited tree with no Final Draft sends the agent back in', () =
 
 // The adapter adds nothing of its own to a verdict. Whatever a sentinel makes
 // of a payload it cannot read, the adapter hands on unchanged.
-test('the adapter never changes a verdict, and runs only the six sentinels', () => {
+test('the adapter never changes a verdict, and runs only the sentinels it names', () => {
   const dir = repo()
   const adapter = (name, input) => spawnSync(process.execPath, [join(HOOKS, 'ribhu-adapter.mjs'), name], { cwd: dir, env: ENV, encoding: 'utf8', input })
   for (const raw of ['{ not json', 'null', '"text"', '{"input":"not an object"}', '']) {
@@ -162,7 +168,8 @@ test('the adapter never changes a verdict, and runs only the six sentinels', () 
   // The name comes from a file a cloned repo can carry: it is never a path.
   for (const name of ['../../etc/passwd', 'ribhu-adapter', 'hazard-sentinel.mjs', undefined]) {
     const r = adapter(name ?? '', '{}')
-    assert.equal(r.status, 1, String(name))
+    // Exit 2: a sentinel that did not run must not read as one that passed.
+    assert.equal(r.status, 2, String(name))
     assert.match(r.stderr, /has no sentinel called/)
   }
 })

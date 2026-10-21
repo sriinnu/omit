@@ -1,0 +1,5 @@
+# LF everywhere: a CRLF checkout on a Windows mount otherwise shows every file
+# as modified, and the Final Draft gate counts that churn as the change.
+* text=auto eol=lf
+*.png binary
+*.zip binary

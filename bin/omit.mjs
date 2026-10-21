@@ -3,7 +3,7 @@
 // CI, and any other agent's hook system all call the same commands.
 //
 //   omit init [agents|claude|cursor|cline|windsurf|all]   copy rule files into this repo
-//   omit audit [--base <ref>] [--json|--markdown]         net diff, new deps, hazards
+//   omit audit [--base <ref>|--session] [--json|--markdown]  net diff, new deps, hazards
 //   omit check <file...>                                  hazard-scan specific files
 //   omit gate                                             audit the staged diff; fail on hazards/uncited deps
 //   omit verify                                           re-check every claim in .omit/receipts.jsonl
@@ -11,13 +11,15 @@
 //   omit hook install                                     add the gate to .git/hooks/pre-commit
 //   omit hook install codex                                write .codex/hooks.json (live sentinels inside Codex CLI)
 //   omit hook install ribhu                               write .ribhu/hooks.json (live sentinels inside Ribhu)
+//   omit hook run <hook>                                  run one of omit's hooks on the payload on stdin
+//   omit mode [margin|redline|rewrite|off]                print the enforcement mode, or set it
 //   omit codemode run [file]                              run one sandboxed script over read-only repo tools (stdin without a file)
 //   omit codemode                                         the same, as an MCP server on stdio
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, chmodSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isManifest, addedDeps, unparsedDependencyFile } from '../lib/deps.mjs'
-import { git, probe, repoRoot, fileAtRevision, GitError } from '../lib/git.mjs'
+import { git, probe, repoRoot, fileAtRevision, GitError, parseNumstat, readBaseline, snapshotTree } from '../lib/git.mjs'
 import { LEDGER, verifyLedger, newDepCitations } from '../lib/receipts.mjs'
 import { findHazards } from '../lib/hazards.mjs'
 import { lintFiles } from '../lib/lint.mjs'
@@ -25,9 +27,27 @@ import { assessCommand } from '../lib/danger.mjs'
 import { assessLeak } from '../lib/leaks.mjs'
 import { execute, serve } from '../lib/codemode.mjs'
 import { doctor } from '../lib/doctor.mjs'
+import { DESCRIBE, MODES, readMode, writeMode } from '../lib/mode.mjs'
 
 const cwd = process.cwd()
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+const { version } = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'))
+
+// Every hook a hooks file may name. load-bearing: `hook run` imports by name,
+// and a cloned repo's hooks file can carry any name, so only these ever run.
+const HOOKS = ['command-sentinel', 'leak-sentinel', 'tamper-sentinel', 'dep-sentinel', 'hazard-sentinel', 'lint-sentinel', 'context-sentinel', 'final-draft-gate', 'session-baseline', 'mode-prompt', 'ribhu-adapter']
+// `npx` runs omit from a cache it prunes, so a hooks file pointing into that
+// cache breaks the day it is cleaned. Installed from there, a hook calls back
+// through npx at this exact version instead.
+const fromNpxCache = /[\\/]_npx[\\/]/.test(pkgRoot)
+const hookCommand = (name, arg) =>
+  (fromNpxCache ? `npx -y @sriinnu/omit@${version} hook run ${name}` : `node "${join(pkgRoot, 'hooks', name + '.mjs')}"`) + (arg ? ` ${arg}` : '')
+// Which omit hook a command runs, whatever path or pinned version installed it,
+// so a reinstall from elsewhere or an upgrade replaces the entry, not doubles it.
+const hookIdentity = (command) => {
+  const m = /(?:[\\/]hooks[\\/]|\bhook run )([\w-]+)(?:\.mjs)?"?(?:\s+([\w-]+))?\s*$/.exec(typeof command === 'string' ? command : '')
+  return m && HOOKS.includes(m[1]) ? `${m[1]} ${m[2] ?? ''}` : null
+}
 
 // ---------- init ----------
 const targets = {
@@ -139,31 +159,6 @@ function requireRevision(root, range) {
   }
 }
 
-// numstat rows. `-z` because a renamed path is otherwise printed as the brace
-// composite `{old => new}/package.json` — not a path at all: `git show` and a
-// filesystem read both fail on it, so both revisions of a rename commit read as
-// empty and a dependency added there goes uncited. With -z the pre-image and
-// post-image names arrive as separate fields:
-//   ordinary  `A\tD\t<path>\0`
-//   rename    `A\tD\t\0<old>\0<new>\0`
-function parseNumstat(out) {
-  const fields = out.split('\0')
-  const rows = []
-  for (let i = 0; i < fields.length; i++) {
-    const head = fields[i]
-    if (!head) continue
-    const [added, deleted, path] = head.split('\t')
-    if (path === '') {
-      const oldPath = fields[++i] ?? ''
-      const newPath = fields[++i] ?? ''
-      rows.push({ path: newPath, oldPath, added, deleted })
-    } else {
-      rows.push({ path, oldPath: path, added, deleted })
-    }
-  }
-  return rows
-}
-
 // The added lines, which is the set every hazard rule reads — so it has to be all
 // of them. A `startsWith('+++')` filter drops a real content line that begins
 // with `++` (the patch prefixes it to `++++`), which hides a secret on that line
@@ -222,17 +217,22 @@ function hooksPathAt(root) {
   return tab === -1 ? { origin: '(unknown)', value: line } : { origin: line.slice(0, tab), value: line.slice(tab + 1) }
 }
 
-function collect(diffRange) {
+// `session` is the SessionStart baseline: the change is then baseline tree →
+// a snapshot of the tree now, two trees, so an untracked file is already in the
+// second one and pre-session dirt is in both. omit's own directory is left out
+// by pathspec, so numstat and the patch still describe the same diff.
+function collect(diffRange, session = null) {
   const root = rootOrDie()
   const staged = diffRange === '--cached'
-  if (!staged) requireRevision(root, diffRange)
+  if (!staged && !session) requireRevision(root, diffRange)
+  const range = session ? [session.tree, snapshotTree(root), '--', '.', ':(exclude).omit'] : [diffRange]
 
   const files = []
   const binaries = []
   let added = 0
   let countedAdded = 0
   let deleted = 0
-  for (const row of parseNumstat(git(root, ['diff', '--numstat', '-z', '-M', diffRange]))) {
+  for (const row of parseNumstat(git(root, ['diff', '--numstat', '-z', '-M', ...range]))) {
     if (row.added === '-') {
       binaries.push(row) // git says binary — read it by content below
       continue
@@ -249,7 +249,7 @@ function collect(diffRange) {
   // Excluded from the staged range — a gate judges what is being committed, and
   // an untracked file is not in the commit.
   const untracked = new Map()
-  if (!staged) {
+  if (!staged && !session) {
     for (const path of git(root, ['ls-files', '--others', '--exclude-standard']).split('\n').filter(Boolean)) {
       if (path.startsWith('.omit/')) continue // omit's own ledger, not the change
       const lines = readLines(root, path)
@@ -260,7 +260,7 @@ function collect(diffRange) {
     }
   }
 
-  const patchAdded = addedLinesOf(git(root, ['diff', '-M', diffRange]))
+  const patchAdded = addedLinesOf(git(root, ['diff', '-M', ...range]))
   // numstat and the patch describe the same diff, so their added-line totals have
   // to agree. If they do not, part of the change went unread — and "scanned
   // nothing" must not be able to render as "found nothing".
@@ -288,9 +288,9 @@ function collect(diffRange) {
   // minified manifest is read the same as a pretty-printed one.
   const newDeps = []
   for (const f of files.filter((f) => isManifest(f.path))) {
-    const before = manifestText(root, f.path, f.oldPath, staged ? 'HEAD' : diffRange)
+    const before = manifestText(root, f.path, f.oldPath, staged ? 'HEAD' : session ? session.tree : diffRange)
     const after = manifestText(root, f.path, f.path, staged ? '' : null)
-    newDeps.push(...addedDeps(basename(f.path), before, after).map((dep) => ({ dep, manifest: f.path })))
+    newDeps.push(...addedDeps(f.path, before, after).map((dep) => ({ dep, manifest: f.path })))
   }
 
   // Dependency-shaped files omit cannot parse — setup.py, build.gradle, a csproj.
@@ -386,10 +386,16 @@ function render(r, fmt) {
 
 function audit(args) {
   const baseIdx = args.indexOf('--base')
-  if (baseIdx !== -1 && (!args[baseIdx + 1] || args[baseIdx + 1].startsWith('-'))) die('usage: omit audit [--base <ref>] [--json|--markdown]')
+  if (baseIdx !== -1 && (!args[baseIdx + 1] || args[baseIdx + 1].startsWith('-'))) die('usage: omit audit [--base <ref> | --session] [--json|--markdown]')
   const base = baseIdx !== -1 ? args[baseIdx + 1] : 'HEAD'
   const fmt = args.includes('--json') ? 'json' : args.includes('--markdown') ? 'markdown' : 'text'
-  console.log(render(collect(base), fmt))
+  let session = null
+  if (args.includes('--session')) {
+    if (baseIdx !== -1) die('--session and --base name different starting points; pick one')
+    session = readBaseline(rootOrDie())
+    if (!session) die('no session baseline recorded — the SessionStart hook writes one (omit hook install claude). Use --base <ref> instead.')
+  }
+  console.log(render(collect(base, session), fmt))
 }
 
 function gate() {
@@ -433,7 +439,7 @@ function gate() {
     process.exit(1)
   }
   if (r.hazards.length) {
-    console.error(`\n⚠ omit gate: injection-prone lines staged. Parameterize, use safe APIs, or mark reviewed lines with omit-allow: <reason>.`)
+    console.error(`\n⚠ omit gate: injection-prone or TLS-bypass lines staged. Parameterize, use safe APIs, point TLS at the CA bundle instead of switching verification off, or mark reviewed lines with omit-allow: <reason>.`)
     process.exit(1)
   }
   const lintFails = (r.lint ?? []).filter((l) => !l.ok)
@@ -550,35 +556,53 @@ function hookInstallCodex(options = [], host = 'codex') {
   mkdirSync(dir, { recursive: true })
   const doc = loadHooksDoc(hooksPath)
 
-  const scriptCmd = (script) => `node "${join(pkgRoot, 'hooks', script)}"`
-  const mergeHook = (event, matcher, script) => {
+  const mergeHook = (event, matcher, name) => {
     doc.hooks[event] ??= []
     let group = doc.hooks[event].find((g) => g.matcher === matcher)
     if (!group) {
       group = { matcher, hooks: [] }
       doc.hooks[event].push(group)
     }
-    const command = scriptCmd(script)
-    if (!group.hooks.some((h) => h.command === command)) group.hooks.push({ type: 'command', command })
+    const command = hookCommand(name)
+    const same = group.hooks.find((h) => hookIdentity(h?.command) === hookIdentity(command))
+    if (same) same.command = command
+    else group.hooks.push({ type: 'command', command })
   }
 
-  mergeHook('PreToolUse', 'Bash', 'command-sentinel.mjs')
-  mergeHook('PreToolUse', 'Bash', 'leak-sentinel.mjs')
-  mergeHook('PostToolUse', 'Bash', 'dep-sentinel.mjs')
-  mergeHook('PostToolUse', 'Bash', 'hazard-sentinel.mjs')
-  mergeHook('PostToolUse', 'apply_patch|Edit|Write', 'dep-sentinel.mjs')
-  mergeHook('PostToolUse', 'apply_patch|Edit|Write', 'hazard-sentinel.mjs')
-  mergeHook('PostToolUse', 'apply_patch|Edit|Write', 'lint-sentinel.mjs')
-  mergeHook('Stop', '', 'final-draft-gate.mjs')
+  if (host === 'claude') {
+    // The plugin's own hooks.json is the one list of what runs under Claude
+    // Code, so a project install cannot drift from the plugin.
+    const plugin = JSON.parse(readFileSync(join(pkgRoot, 'hooks', 'hooks.json'), 'utf8'))
+    for (const [event, groups] of Object.entries(plugin.hooks)) {
+      for (const g of groups) for (const h of g.hooks) mergeHook(event, g.matcher, /hooks\/([\w-]+)\.mjs/.exec(h.command)[1])
+    }
+  } else {
+    mergeHook('SessionStart', '', 'session-baseline')
+    mergeHook('PreToolUse', 'Bash', 'command-sentinel')
+    mergeHook('PreToolUse', 'Bash', 'leak-sentinel')
+    mergeHook('PreToolUse', 'Bash', 'tamper-sentinel')
+    mergeHook('PreToolUse', 'apply_patch|Edit|Write', 'tamper-sentinel')
+    mergeHook('PostToolUse', 'Bash', 'dep-sentinel')
+    mergeHook('PostToolUse', 'Bash', 'hazard-sentinel')
+    mergeHook('PostToolUse', 'apply_patch|Edit|Write', 'dep-sentinel')
+    mergeHook('PostToolUse', 'apply_patch|Edit|Write', 'hazard-sentinel')
+    mergeHook('PostToolUse', 'apply_patch|Edit|Write', 'lint-sentinel')
+    mergeHook('Stop', '', 'final-draft-gate')
+  }
   if (options.includes('--context')) {
-    mergeHook('PreToolUse', 'Bash', 'context-sentinel.mjs')
-    mergeHook('PostToolUse', 'Bash', 'context-sentinel.mjs')
+    mergeHook('PreToolUse', 'Bash', 'context-sentinel')
+    mergeHook('PostToolUse', 'Bash', 'context-sentinel')
   }
 
   writeFileSync(hooksPath, JSON.stringify(doc, null, 2) + '\n')
   console.log(`wrote ${hooksPath}`)
-  console.log('  verified against Codex\'s documented schema: command sentinel + leak sentinel run on Bash commands (same tool_input.command shape as Claude Code)')
-  console.log('  file sentinels cover apply_patch/Edit/Write; dependency and hazard checks also cover Bash edits. Payload tests do not establish live Codex hook delivery.')
+  if (host === 'claude') {
+    console.log('  the same hooks the omit plugin registers: session baseline, /omit <mode>, command/leak/tamper before Bash, leak before Read/Grep,')
+    console.log('  tamper/dependency/hazard before file edits, lint after them, the Final Draft gate on Stop and SubagentStop')
+  } else {
+    console.log('  verified against Codex\'s documented schema: command, leak and tamper sentinels run on Bash commands (same tool_input.command shape as Claude Code)')
+    console.log('  file sentinels cover apply_patch/Edit/Write; dependency and hazard checks also cover Bash edits. Payload tests do not establish live Codex hook delivery.')
+  }
   console.log(`\nReview the installed hooks in ${host}; installation does not prove live delivery.`)
 }
 
@@ -607,15 +631,26 @@ function hookInstall() {
   }
   const dir = hooksDir()
   const hookPath = join(dir, 'pre-commit')
-  if (existsSync(hookPath) && readFileSync(hookPath, 'utf8').includes('omit gate')) {
-    console.log(`skip  pre-commit gate already installed at ${hookPath}`)
-    return
+  const existing = existsSync(hookPath) ? readFileSync(hookPath, 'utf8') : null
+  const GATE = /@sriinnu\/omit(?:@[\w.-]+)? gate/g
+  if (existing !== null && GATE.test(existing)) {
+    // An older pin keeps running that version's gate: move it to this one.
+    const pinned = existing.replace(GATE, () => `@sriinnu/omit@${version} gate`)
+    if (pinned === existing) return console.log(`skip  pre-commit gate already installed at ${hookPath}`)
+    writeFileSync(hookPath, pinned)
+    return console.log(`updated ${hookPath}: the pre-commit gate now runs omit ${version}`)
   }
-  const line = '\nnpx -y @sriinnu/omit gate || exit 1\n'
-  if (existsSync(hookPath)) {
-    writeFileSync(hookPath, readFileSync(hookPath, 'utf8') + line)
+  // Pinned: an unpinned npx runs whatever is latest on the registry at commit time.
+  const line = `npx -y @sriinnu/omit@${version} gate || exit 1\n`
+  if (existing === null) {
+    writeFileSync(hookPath, '#!/bin/sh\n' + line)
   } else {
-    writeFileSync(hookPath, '#!/bin/sh' + line)
+    // First, right after the shebang: appended, it never runs behind an existing `exit 0`.
+    const shebang = /^#!.*\n?/.exec(existing)?.[0] ?? ''
+    if (shebang && !/\b(?:sh|bash|dash|zsh)\b/.test(shebang)) {
+      die(`${hookPath} is not a shell script (${shebang.trim()}). Run this from it before anything else:\n  ${line}`)
+    }
+    writeFileSync(hookPath, shebang + (shebang.endsWith('\n') || !shebang ? '' : '\n') + line + existing.slice(shebang.length))
   }
   chmodSync(hookPath, 0o755)
   console.log(`wrote ${hookPath}: every commit now passes the omit gate, whatever agent wrote it`)
@@ -627,7 +662,7 @@ function hookInstall() {
         '  repo on this machine is not what "install the gate here" means.\n' +
         `  To make this gate effective here:   git config core.hooksPath .git/hooks\n` +
         `  To use your global directory instead, add this line to ${shadow.value}/pre-commit:\n` +
-        '    npx -y @sriinnu/omit gate || exit 1'
+        `    npx -y @sriinnu/omit@${version} gate || exit 1`
     )
   }
 }
@@ -688,15 +723,20 @@ function hookInstallRibhu() {
   const doc = loadHooksDoc(hooksPath)
 
   const add = (event, matcher, sentinel, extra) => {
-    const command = `node "${join(pkgRoot, 'hooks', 'ribhu-adapter.mjs')}" ${sentinel}`
+    const command = hookCommand('ribhu-adapter', sentinel)
     doc.hooks[event] ??= []
-    if (!doc.hooks[event].some((h) => h?.command === command)) doc.hooks[event].push({ ...(matcher && { matcher }), command, ...extra })
+    const same = doc.hooks[event].find((h) => h?.matcher === matcher && hookIdentity(h.command) === hookIdentity(command))
+    if (same) same.command = command
+    else doc.hooks[event].push({ ...(matcher && { matcher }), command, ...extra })
   }
   // Anchored: Ribhu matches with an unanchored regex, and a bare `write`
   // would also catch todo_write.
   const files = 'edit|multi_edit|ast_edit|write'
   add('PreToolUse', '^bash$', 'command-sentinel')
   add('PreToolUse', '^bash$', 'leak-sentinel')
+  add('PreToolUse', '^bash$', 'tamper-sentinel')
+  add('PreToolUse', '^read$', 'leak-sentinel')
+  add('PreToolUse', `^(${files})$`, 'tamper-sentinel')
   add('PostToolUse', `^(bash|${files})$`, 'dep-sentinel')
   add('PostToolUse', `^(bash|${files})$`, 'hazard-sentinel')
   // Ribhu gives a hook ten seconds unless told otherwise, and a linter on a
@@ -706,9 +746,20 @@ function hookInstallRibhu() {
 
   writeFileSync(hooksPath, JSON.stringify(doc, null, 2) + '\n')
   console.log(`wrote ${hooksPath}`)
-  console.log('  command + leak sentinels before bash; dependency + hazard sentinels after bash and file edits; lint after file edits; Final Draft gate on Stop')
+  console.log('  command, leak and tamper sentinels before bash; leak before read; tamper before file edits; dependency + hazard sentinels after bash and file edits; lint after file edits; Final Draft gate on Stop')
   console.log("  checked against Ribhu's hook contract with real payload shapes; not yet verified firing inside a live Ribhu session")
   console.log('\nRibhu runs a repository\'s hooks only once the project is trusted.')
+}
+
+// ---------- mode ----------
+// The user's way to set the mode from a shell (`! omit mode margin`). The
+// tamper sentinel refuses this same command when the agent runs it.
+function mode(args) {
+  if (args.length > 1 || (args[0] !== undefined && !MODES.includes(args[0]))) die(`${args[0] === undefined || args.length > 1 ? '' : `unknown mode "${args[0]}". `}usage: omit mode [${MODES.join('|')}]`)
+  if (args[0]) writeMode(cwd, args[0])
+  const now = readMode(cwd)
+  console.log(`omit mode: ${now}. ${DESCRIBE[now]}`)
+  if (args[0] && now !== args[0]) console.log('  OMIT_OFF or OMIT_MODE in this environment overrides .omit/mode.')
 }
 
 // ---------- codemode ----------
@@ -733,7 +784,6 @@ async function codemode(args) {
     process.exitCode = isError ? 1 : 0
     return
   }
-  const { version } = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'))
   serve({ sandbox, root, version })
 }
 
@@ -757,6 +807,11 @@ try {
     console.log(rest.includes('--json') ? JSON.stringify(report, null, 2) : ['omit doctor (read-only; live delivery unverified)', ...report.findings.map(f => `${f.level}: ${f.message}`)].join('\n'))
     if (report.findings.some(f => f.level === 'error')) process.exitCode = 1
   }
+  else if (cmd === 'mode') mode(rest)
+  else if (cmd === 'hook' && rest[0] === 'run') {
+    if (!HOOKS.includes(rest[1])) die(`usage: omit hook run <${HOOKS.join('|')}>`)
+    await import(`../hooks/${rest[1]}.mjs`)
+  }
   else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === 'codex') hookInstallCodex(rest.slice(2))
   else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === 'claude') hookInstallCodex(rest.slice(2), 'claude')
   else if (cmd === 'hook' && rest[0] === 'install' && rest[1] === 'ribhu') hookInstallRibhu()
@@ -768,7 +823,7 @@ try {
   else if (cmd === 'init') init(rest[0])
   else if (targets[cmd]) init(cmd) // back-compat: `omit cursor`
   else {
-    console.error('usage: omit <init|audit|check|gate|lint|guard|leak|verify|codemode|context|doctor [--json]|hook install [codex|claude|ribhu] [--context]>')
+    console.error('usage: omit <init|audit|check|gate|lint|guard|leak|verify|mode|codemode|context|doctor [--json]|hook install [codex|claude|ribhu] [--context]|hook run <hook>>')
     process.exit(cmd ? 1 : 0)
   }
 } catch (e) {

@@ -180,11 +180,16 @@ test('a checkout directory ending in .omit does not exempt the files inside it',
   assert.equal(r.status, 2, `expected a blocking exit 2, got ${r.status}: ${r.stderr}`)
 })
 
-test("only omit's own directory is exempt, compared whole-segment", () => {
+test("only omit's own root directory is exempt, and only from the editorial rules", () => {
   const { dir } = repo()
   mkdirSync(join(dir, '.omit'), { recursive: true })
-  writeFileSync(join(dir, '.omit', 'receipts.jsonl'), `${SECRET}\n`)
+  writeFileSync(join(dir, '.omit', 'receipts.jsonl'), 'ev' + 'al(x)\n')
   assert.equal(hook('hazard-sentinel.mjs', edit(dir, join(dir, '.omit', 'receipts.jsonl'))).status, 0)
+  writeFileSync(join(dir, '.omit', 'receipts.jsonl'), `${SECRET}\n`)
+  assert.equal(hook('hazard-sentinel.mjs', edit(dir, join(dir, '.omit', 'receipts.jsonl'))).status, 2)
+  mkdirSync(join(dir, 'sub', '.omit'), { recursive: true })
+  writeFileSync(join(dir, 'sub', '.omit', 'y.js'), 'ev' + 'al(x)\n')
+  assert.equal(hook('hazard-sentinel.mjs', edit(dir, join(dir, 'sub', '.omit', 'y.js'))).status, 2)
   writeFileSync(join(dir, 'notes.omit'), `${SECRET}\n`)
   assert.equal(hook('hazard-sentinel.mjs', edit(dir, join(dir, 'notes.omit'))).status, 2)
 })
@@ -322,12 +327,17 @@ test("a Final Draft pasting omit audit's real verdict passes", () => {
 // ---- A6: tool-event coverage ----
 test('hooks.json routes the file sentinels to NotebookEdit and to Bash', () => {
   const doc = JSON.parse(readFileSync(join(HOOKS, 'hooks.json'), 'utf8'))
-  const covers = (tool, script) =>
-    doc.hooks.PostToolUse.some((g) => new RegExp(`^(?:${g.matcher})$`).test(tool) && (g.hooks ?? []).some((h) => h.command.includes(script)))
-  assert.ok(covers('Edit', 'hazard-sentinel.mjs'))
-  assert.ok(covers('NotebookEdit', 'hazard-sentinel.mjs'), 'a notebook cell reaches no sentinel')
-  assert.ok(covers('Bash', 'hazard-sentinel.mjs'), 'cat >, tee and sed -i reach no sentinel')
-  assert.ok(covers('Bash', 'dep-sentinel.mjs'), 'npm pkg set rewrites package.json invisibly')
+  const covers = (event, tool, script) =>
+    doc.hooks[event].some((g) => new RegExp(`^(?:${g.matcher})$`).test(tool) && (g.hooks ?? []).some((h) => h.command.includes(script)))
+  // File edits are judged before they land; a shell write only after it ran.
+  assert.ok(covers('PreToolUse', 'Edit', 'hazard-sentinel.mjs'))
+  assert.ok(covers('PreToolUse', 'NotebookEdit', 'hazard-sentinel.mjs'), 'a notebook cell reaches no sentinel')
+  assert.ok(covers('PreToolUse', 'Write', 'dep-sentinel.mjs'))
+  assert.ok(covers('PreToolUse', 'Edit', 'tamper-sentinel.mjs'))
+  assert.ok(covers('PreToolUse', 'Read', 'leak-sentinel.mjs'))
+  assert.ok(covers('PostToolUse', 'Bash', 'hazard-sentinel.mjs'), 'cat >, tee and sed -i reach no sentinel')
+  assert.ok(covers('PostToolUse', 'Bash', 'dep-sentinel.mjs'), 'npm pkg set rewrites package.json invisibly')
+  assert.ok(covers('SubagentStop', '', 'final-draft-gate.mjs'))
 })
 
 test('a notebook cell written by NotebookEdit is scanned', () => {

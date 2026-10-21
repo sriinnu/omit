@@ -1,17 +1,21 @@
 #!/usr/bin/env node
-// PostToolUse hook: raises a blocking objection when a new dependency lands in
-// a manifest without a receipt in .omit/receipts.jsonl.
+// Raises a blocking objection when a new dependency lands in a manifest without
+// a receipt in .omit/receipts.jsonl. PreToolUse on an edit tool compares the
+// manifest the tool is about to write, so the dependency never lands uncited;
+// PostToolUse compares the file after the fact.
 //
 // Fires on file edits (Edit|Write|MultiEdit|NotebookEdit) and on Bash: a
 // manifest is also rewritten by `npm pkg set`, a redirect, `tee` or `sed -i`,
 // and the same change through a different tool is the same change.
-import { readFileSync, realpathSync } from 'node:fs'
-import { basename, resolve } from 'node:path'
-import { isManifest, addedDeps, MANIFESTS } from '../lib/deps.mjs'
-import { probe, fileAtRevision, repoRelPath } from '../lib/git.mjs'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { isManifest, addedDeps } from '../lib/deps.mjs'
+import { fileAtRevision, repoRelPath, repoRootStrict } from '../lib/git.mjs'
 import { execDisabled, flagOn } from '../lib/exec.mjs'
 import { newDepCitations } from '../lib/receipts.mjs'
 import { patchPaths } from '../lib/patch-paths.mjs'
+import { proposedText } from '../lib/proposed.mjs'
+import { object } from '../lib/mode.mjs'
 
 if (process.env.OMIT_OFF === '1') process.exit(0)
 
@@ -35,19 +39,6 @@ const block = (message) => {
 const mayExec = flagOn(process.env.OMIT_HOOK_EXEC)
 if (!mayExec) process.env.OMIT_NO_EXEC = '1'
 
-// repoRoot() answers null both for "not a repository" and for "git could not
-// answer", and those want opposite exits: no repository means there is no HEAD
-// to compare against, while a git that cannot run at all (missing binary, dubious
-// ownership, unreadable object store) means the check never happened. git's own
-// message is the only thing that separates the two, so match on it and fail
-// closed on everything else.
-function repoRootOrNull(cwd) {
-  const r = probe(cwd, ['rev-parse', '--show-toplevel'])
-  if (r.ok) return r.out.trim()
-  if (/not a git repository|must be run in a work tree/i.test(String(r.reason))) return null
-  throw new Error(`git could not report the repository root (${r.reason})`)
-}
-
 // The manifests a shell command plausibly rewrote, decided by pure string work:
 // this runs on every Bash call, so nothing may spawn a process until a manifest
 // is actually in play. Two signals — a package manager whose subcommand writes a
@@ -65,27 +56,8 @@ const MANAGER_WRITES = [
 function manifestsTouched(command) {
   const out = new Set()
   for (const [re, name] of MANAGER_WRITES) if (re.test(command)) out.add(name)
-  for (const name of MANIFESTS) {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const m = command.match(new RegExp(`(?:^|[\\s'"=<>|(])([\\w./\\\\-]*${escaped})`, 'i'))
-    if (m) out.add(m[1])
-  }
+  for (const word of command.split(/[\s'"=<>|();&]+/)) if (isManifest(word)) out.add(word)
   return [...out]
-}
-
-// repoRelPath is lexical, and the path the harness sends and the root git
-// reports do not always agree on symlinks: on macOS `/tmp` and `/var` are links
-// into `/private`, and git answers with the resolved root. A mismatch reads as
-// "outside the repo" — which exits 0, a manifest edit silently unaudited. So
-// resolve the file and ask again before giving up on it.
-function relInRoot(root, abs) {
-  const lexical = repoRelPath(root, abs)
-  if (lexical !== null) return lexical
-  try {
-    return repoRelPath(root, realpathSync(abs))
-  } catch {
-    return null // no such file: nothing to compare, nothing added
-  }
 }
 
 // A manifest we cannot read as text declares nothing, so nothing was added to it.
@@ -123,17 +95,18 @@ try {
     typeof ti.file_path === 'string' ? (isManifest(ti.file_path) ? [ti.file_path] : []) : typeof ti.command === 'string' ? manifestsTouched(ti.command) : []
   if (targets.length === 0) process.exit(0) // an edit that cannot be a manifest edit
 
-  const root = repoRootOrNull(cwd)
+  const root = repoRootStrict(cwd)
   if (root === null) process.exit(0) // not a repository: no history to compare against
 
+  const pre = data.hook_event_name === 'PreToolUse'
   const citations = newDepCitations(root)
   const uncited = new Map()
   for (const target of targets) {
     const abs = resolve(cwd, target)
-    const rel = relInRoot(root, abs)
+    const rel = repoRelPath(root, abs)
     if (rel === null) continue // outside the repo: not ours to audit
-    const after = readManifest(abs)
-    if (after === null) continue
+    const after = pre ? proposedText(ti, readManifest(abs)) : readManifest(abs)
+    if (after === null) continue // deleted, or (before the edit) a shape the tool itself will refuse
     const before = fileAtRevision(root, 'HEAD', rel)
     // `{failed:true}` is not an empty file. Rendering it as one would turn every
     // dependency in the manifest into a "new" one, or hide the added one
@@ -145,7 +118,7 @@ try {
     // parsing the diff: a brand-new manifest has no earlier revision, so
     // everything in it is new, and a minified manifest declares the same set as
     // a pretty-printed one.
-    for (const dep of addedDeps(basename(rel), before.present ? before.text : '', after)) {
+    for (const dep of addedDeps(rel, before.present ? before.text : '', after)) {
       const status = citations.get(dep)?.status
       // Only a VERIFIED new-dep receipt cites a dependency — a ledger line that
       // merely names it is an assertion, which is what this hook exists to stop
@@ -167,8 +140,9 @@ try {
     .join('\n')
 
   const decl = deps.length > 1 ? 'ies' : 'y'
-  console.error(
-    `omit objects: new dependenc${decl} without a verified receipt: ${deps.map(([d]) => d).join(', ')}.\n` +
+  object(
+    cwd,
+    `omit objects${pre ? ' before the edit lands' : ''}: new dependenc${decl} without a verified receipt: ${deps.map(([d]) => d).join(', ')}.\n` +
       why +
       '\n' +
       // Honest when it declines to execute: a receipt whose only evidence is a
@@ -190,9 +164,9 @@ try {
       // with the one you actually looked for; the claim survives only if that
       // search comes back empty.
       `  {"claim":"new-dep","rung":7,"dep":"${deps[0][0]}","tried":[{"rung":2,"absent":"<symbol you searched for>"}]}\n` +
-      `\`omit verify\` checks it before you commit. Otherwise revert the manifest change.`
+      (pre ? '`omit verify` checks it; record the receipt before making the manifest edit.' : '`omit verify` checks it before you commit. Otherwise revert the manifest change.'),
+    data.hook_event_name
   )
-  process.exit(2)
 } catch (e) {
   block(
     `omit could not complete the new-dependency check (${e?.message ?? e}).\n` +

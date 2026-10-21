@@ -4,6 +4,7 @@
 import { readFileSync } from 'node:fs'
 import { lintFiles } from '../lib/lint.mjs'
 import { patchPaths } from '../lib/patch-paths.mjs'
+import { object } from '../lib/mode.mjs'
 
 if (process.env.OMIT_OFF === '1') process.exit(0)
 
@@ -39,12 +40,13 @@ try {
   const failing = lintFiles(cwd, files).filter((r) => !r.ok)
   if (failing.length === 0) process.exit(0)
 
-  console.error(
+  object(
+    cwd,
     `omit: the linter this repo already configured objects (omission 2: use what exists).\n` +
       failing.map((r) => `[${r.linter}]\n${r.output}`).join('\n') +
-      `\nFix these now; do not restate or suppress them.`
+      `\nFix these now; do not restate or suppress them.`,
+    data.hook_event_name
   )
-  process.exit(2)
 } catch (e) {
   block(
     `omit could not run the repo's linter (${e?.message ?? e}).\n` +

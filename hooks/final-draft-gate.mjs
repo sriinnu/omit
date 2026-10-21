@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 // Stop hook: the turn may not end with an edited working tree and no Final Draft.
-// The deletion pass is a gate, not a suggestion.
+// The deletion pass is a gate, not a suggestion. On SubagentStop the same gate
+// holds a subagent that edited files to its own Final Draft before it reports
+// back; a read-only subagent passes.
+//
+// The change is this session's when the SessionStart baseline belongs to it:
+// the baseline tree against a snapshot of the tree now, so dirt that was there
+// before the session started is not charged to it. Without one it is HEAD
+// against the working tree, as `omit audit` counts.
 //
 // The draft has to be a REPORT, not a file. Existence and mtime alone let a
 // 0-byte .omit/final-draft.md satisfy a gate whose promise is that a session
@@ -8,9 +15,10 @@
 // for — files touched, lines added/removed, new dependencies — are read out of
 // the draft and cross-checked against the tree.
 import { readFileSync, lstatSync, statSync } from 'node:fs'
-import { basename, join } from 'node:path'
-import { probe, git, fileAtRevision } from '../lib/git.mjs'
+import { join } from 'node:path'
+import { git, fileAtRevision, parseNumstat, readBaseline, repoRootStrict, snapshotTree } from '../lib/git.mjs'
 import { isManifest, addedDeps } from '../lib/deps.mjs'
+import { object } from '../lib/mode.mjs'
 
 if (process.env.OMIT_OFF === '1') process.exit(0)
 
@@ -28,14 +36,22 @@ try {
 if (data.stop_hook_active) process.exit(0) // never loop the gate
 
 const DRAFT_MAX = 1 << 20
+const TRANSCRIPT_MAX = 64 << 20
 
-// repoRoot() answers null for "not a repository" and for "git could not answer",
-// which want opposite exits — see dep-sentinel for the full note.
-function repoRootOrNull(cwd) {
-  const r = probe(cwd, ['rev-parse', '--show-toplevel'])
-  if (r.ok) return r.out.trim()
-  if (/not a git repository|must be run in a work tree/i.test(String(r.reason))) return null
-  throw new Error(`git could not report the repository root (${r.reason})`)
+// Whether a subagent's transcript records a file edit. Unreadable or absent
+// reads as no: the main session's Stop gate still counts the tree, so a
+// read-only subagent is never held to a report on the parent's edits.
+function subagentEdited(path) {
+  if (typeof path !== 'string') return false
+  try {
+    const st = lstatSync(path)
+    if (!st.isFile() || st.size > TRANSCRIPT_MAX) return false
+    return readFileSync(path, 'utf8')
+      .split('\n')
+      .some((l) => l.includes('"tool_use"') && /"name"\s*:\s*"(?:Edit|Write|MultiEdit|NotebookEdit)"/.test(l))
+  } catch {
+    return false
+  }
 }
 
 // Text, or null when there is nothing to count (binary, unreadable, gone).
@@ -61,17 +77,20 @@ const lineCount = (text) => {
 // and which are most of a working tree mid-session. Binary and unreadable files
 // carry no line counts and are left out, which is the same choice audit makes —
 // that is what lets a draft pasting audit's verdict match unchanged.
-function changeSet(root) {
+function changeSet(root, base) {
   const rows = []
   let binaries = 0
-  for (const line of git(root, ['diff', 'HEAD', '--numstat']).split('\n').filter(Boolean)) {
-    const [a, d, rel] = line.split('\t')
-    if (a === '-') {
+  // A baseline snapshot already holds the untracked files, and omit's own
+  // directory is left out by pathspec, the way `omit audit --session` does.
+  const range = base ? [base, snapshotTree(root), '--', '.', ':(exclude).omit'] : ['HEAD']
+  for (const row of parseNumstat(git(root, ['diff', '--numstat', '-z', '-M', ...range]))) {
+    if (row.added === '-') {
       binaries++
       continue
     }
-    rows.push({ rel, added: +a, deleted: +d, untracked: false })
+    rows.push({ rel: row.path, oldRel: row.oldPath, added: +row.added, deleted: +row.deleted })
   }
+  if (base) return { rows, binaries }
   for (const rel of git(root, ['ls-files', '--others', '--exclude-standard']).split('\n').filter(Boolean)) {
     // omit's own bookkeeping is not the change, and audit skips it the same way —
     // that is what lets a draft pasting audit's verdict match this count.
@@ -80,14 +99,14 @@ function changeSet(root) {
     if (rel.startsWith('.omit/')) continue
     const text = readText(join(root, rel))
     if (text === null) continue
-    rows.push({ rel, added: lineCount(text), deleted: 0, untracked: true })
+    rows.push({ rel, oldRel: rel, added: lineCount(text), deleted: 0 })
   }
   return { rows, binaries }
 }
 
 // The counts the report is checked against. `files` is the size of the set, so
 // every call here passes the set it wants counted.
-function counts(root, rows) {
+function counts(root, rows, base) {
   let added = 0
   let deleted = 0
   let deps = 0
@@ -96,11 +115,11 @@ function counts(root, rows) {
     deleted += r.deleted
     if (!isManifest(r.rel)) continue
     const after = readText(join(root, r.rel)) ?? '' // deleted or unreadable: declares nothing
-    const before = fileAtRevision(root, 'HEAD', r.rel)
+    const before = fileAtRevision(root, base ?? 'HEAD', r.oldRel)
     // `{failed:true}` is not an empty manifest: reading it as one would turn
     // every dependency it declares into a "new" one.
-    if (before.failed) throw new Error(`git could not read ${r.rel} at HEAD (${before.reason}) — the new-dependency count would be a guess`)
-    deps += addedDeps(basename(r.rel), before.present ? before.text : '', after).length
+    if (before.failed) throw new Error(`git could not read ${r.oldRel} at ${base ?? 'HEAD'} (${before.reason}) — the new-dependency count would be a guess`)
+    deps += addedDeps(r.rel, before.present ? before.text : '', after).length
   }
   return { files: rows.length, added, deleted, deps }
 }
@@ -155,49 +174,60 @@ function parseReport(text) {
 
 function main() {
   const cwd = data.cwd ?? process.cwd()
-  const root = repoRootOrNull(cwd)
+  // Editorial: the mode decides whether this blocks or advises.
+  const refuse = (message) => object(cwd, message, data.hook_event_name)
+  if (data.hook_event_name === 'SubagentStop' && !subagentEdited(data.agent_transcript_path)) process.exit(0)
+  const root = repoRootStrict(cwd)
   if (root === null) process.exit(0) // not a repository: there is no diff to gate
 
-  const { rows, binaries } = changeSet(root)
+  // Only this session's own baseline: another session's would hide this one's
+  // earlier edits, so anything else falls back to HEAD, which hides nothing.
+  const baseline = readBaseline(root)
+  const base = baseline && typeof data.session_id === 'string' && baseline.session === data.session_id ? baseline.tree : null
+  const auditCmd = base ? '`omit audit --session`' : '`omit audit`'
+  const { rows, binaries } = changeSet(root, base)
   const changed = rows.filter((r) => !r.rel.startsWith('.omit/'))
-  // omitted: distinguishing this session's edits from pre-existing dirt: git has no
-  // session concept; set OMIT_OFF=1 in dirty-tree workflows until a marker file lands.
   if (changed.length === 0) process.exit(0)
 
+  const actual = counts(root, changed, base)
+  // The agent gets one retry (stop_hook_active ends the gate after it), so the
+  // first refusal spells out the exact lines the parser reads.
+  const shape =
+    `files touched: ${actual.files}\nlines +${actual.added} −${actual.deleted}\n` +
+    `new dependencies: ${actual.deps}\n(those are this tree's counts now; update them if you edit further)`
   const draftPath = join(root, '.omit', 'final-draft.md')
   let draft
   try {
     draft = readDraft(draftPath)
   } catch (e) {
-    block(
+    refuse(
       `omit: the working tree changed but there is no readable .omit/final-draft.md${e.code === 'ENOENT' ? '' : ` (${e.message})`}.\n` +
         'Working code is a first draft. Edit your own diff once (dead branches, unused params/imports, ' +
         'speculative options, restating comments, single-caller indirection), then write the net report to ' +
-        '.omit/final-draft.md: files touched, lines +/-, new dependencies, footnotes recorded. Then finish.'
+        `.omit/final-draft.md, with these three lines exactly as shown, plus what you cut and any footnotes:\n${shape}\nThen finish.`
     )
   }
 
   // A draft older than the newest edit describes a tree that no longer exists.
   const newestEdit = Math.max(...changed.map((r) => statSync(join(root, r.rel), { throwIfNoEntry: false })?.mtimeMs ?? 0))
   if (draft.mtimeMs < newestEdit) {
-    block(
+    refuse(
       'omit: the Final Draft is older than the newest edit — it reports a tree that no longer exists.\n' +
-        'Re-run `omit audit`, update the counts in .omit/final-draft.md, then finish.'
+        `Update the counts in .omit/final-draft.md to:\n${shape}\nThen finish.`
     )
   }
 
-  const actual = counts(root, changed)
   const report = parseReport(draft.text)
   const missing = []
   if (report.files === null) missing.push('"files touched: <n>"')
   if (report.lines === null) missing.push('"lines +<added> −<removed>"')
   if (report.deps === null) missing.push('"new dependencies: <n>"')
   if (missing.length) {
-    block(
+    refuse(
       `omit: .omit/final-draft.md does not state ${missing.join(', ')}.\n` +
         `The gate is on the report, not on the file existing. This tree right now: ${actual.files} file(s), ` +
         `+${actual.added} −${actual.deleted} lines, ${actual.deps} new dependenc${actual.deps === 1 ? 'y' : 'ies'}.\n` +
-        'Those are the numbers `omit audit` prints. Write them down, say what you cut, then finish.'
+        `Those are the numbers ${auditCmd} prints. Write them down, say what you cut, then finish.`
     )
   }
 
@@ -219,7 +249,7 @@ function main() {
   // developer did is hidden by letting that through — which is not true of any
   // other mismatch, where the draft is simply stating a number the tree
   // contradicts.
-  const audited = counts(root, rows)
+  const audited = counts(root, rows, base)
   if (report.files === audited.files && report.lines[0] === audited.added && report.lines[1] === audited.deleted && report.deps === audited.deps) {
     console.error(
       "omit: note — the Final Draft matches `omit audit`'s counts, which include omit's own tracked files under .omit/.\n" +
@@ -228,7 +258,7 @@ function main() {
     process.exit(0)
   }
 
-  block(
+  refuse(
     `omit: the Final Draft reports numbers the tree contradicts:\n${wrong.join('\n')}\n` +
       `This tree right now: ${actual.files} file(s), +${actual.added} −${actual.deleted} lines, ${actual.deps} new dependenc${actual.deps === 1 ? 'y' : 'ies'}.\n` +
       'Fix the numbers in .omit/final-draft.md (untracked files count — `git diff --stat` cannot see them), then finish.'

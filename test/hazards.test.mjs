@@ -104,6 +104,10 @@ test('every SECRET_RULES entry actually matches a real sample of its own shape',
     'google-api-key': google,
     'chitragupta-key': chitragupta,
     'hardcoded-credential': credential,
+    'unquoted-credential': 'password: hunter2hunter2hunter2',
+    'npm-token': 'npm_' + 'a1'.repeat(18),
+    'gitlab-token': 'glpat-' + 'a1'.repeat(10),
+    'url-credential': 'postgres://app:' + 'p4ss' + '@db.internal/app',
   }
   assert.deepEqual(
     Object.keys(samples).sort(),
