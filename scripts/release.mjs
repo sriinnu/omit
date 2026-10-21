@@ -6,8 +6,7 @@
 // A run that stopped partway is finished by running the same command again.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const bump = process.argv[2];
@@ -69,6 +68,13 @@ run("git", ["fetch", "origin", "main"]);
 if (out("git", ["rev-parse", "HEAD"]) !== out("git", ["rev-parse", "origin/main"]))
   fail("main is not in sync with origin/main");
 run("gh", ["auth", "status"]);
+// load-bearing: the tap's main takes only signed commits, and its PR is the
+// last step: a machine that cannot sign must stop before anything is tagged
+// or published. This signs a commit object nothing references (a hardware key
+// asks for its touch here). It speaks for the tap commit because the tap is
+// cloned inside this repo's .git, under the same conditional git config.
+if (probe("git", ["commit-tree", "-S", "HEAD^{tree}", "-m", "release: signing probe"]).status !== 0)
+  fail("git cannot sign commits here, and the Homebrew tap requires signed commits");
 
 // --- a release that stopped partway leaves main at a version that is not
 // fully out. Running again finishes that one: each step below is skipped
@@ -142,7 +148,10 @@ if (!onNpm(pkg, version)) {
 
 // --- GitHub release
 if (!hasRelease(tag))
-  run("gh", ["release", "create", tag, "--verify-tag", "--generate-notes"]);
+  // the REST call, not `gh release create`: gh before 2.5 lacks
+  // --verify-tag and --generate-notes, and the tag is known pushed by now
+  run("gh", ["api", "repos/sriinnu/omit/releases",
+    "-f", `tag_name=${tag}`, "-F", "generate_release_notes=true"]);
 
 // --- wait for npm to serve the version (registry read-replica lag)
 let live = false;
@@ -158,7 +167,10 @@ if (!live) fail(`${pkg}@${version} never appeared on npm`);
 
 // --- Homebrew tap
 const tarball = out("npm", ["view", `${pkg}@${version}`, "dist.tarball"]);
-const tmp = mkdtempSync(join(tmpdir(), "omit-release-"));
+// inside .git, not the system tmpdir: a git config included by `gitdir:` (as
+// signing setups often are) reaches the tap clone only from here, and git
+// never tracks what is under .git
+const tmp = mkdtempSync(join(out("git", ["rev-parse", "--absolute-git-dir"]), "omit-release-"));
 const tgz = join(tmp, "pkg.tgz");
 run("curl", ["-fsSL", tarball, "-o", tgz]);
 const sha256 = out("shasum", ["-a", "256", tgz]).split(" ")[0];
@@ -198,7 +210,7 @@ run("git", ["-C", tap, "add", "Formula/omit.rb"]);
 if (out("git", ["-C", tap, "status", "--porcelain"])) {
   const tapBranch = `omit-${version}`;
   run("git", ["-C", tap, "switch", "-c", tapBranch]);
-  run("git", ["-C", tap, "commit", "-m", `omit ${version}`]);
+  run("git", ["-C", tap, "commit", "-S", "-m", `omit ${version}`]);
   run("git", ["-C", tap, "push", "-u", "origin", tapBranch]);
   const tapPr = out("gh", ["pr", "create", "-R", "sriinnu/homebrew-tap",
     "--head", tapBranch, "--title", `omit ${version}`,
@@ -206,6 +218,7 @@ if (out("git", ["-C", tap, "status", "--porcelain"])) {
   waitUntilMergeable(tapPr, "sriinnu/homebrew-tap");
   run("gh", ["pr", "merge", tapPr, "-R", "sriinnu/homebrew-tap", "--squash", "--delete-branch"]);
 }
+rmSync(tmp, { recursive: true, force: true });
 
 console.log(`
 released ${pkg}@${version}
