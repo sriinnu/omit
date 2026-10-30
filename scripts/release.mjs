@@ -153,9 +153,11 @@ if (!hasRelease(tag))
   run("gh", ["api", "repos/sriinnu/omit/releases",
     "-f", `tag_name=${tag}`, "-F", "generate_release_notes=true"]);
 
-// --- wait for npm to serve the version (registry read-replica lag)
+// --- wait for npm to serve the version. CI only stages it: approve it now
+// with 2FA (npm stage list / npm stage approve <id>); this waits up to 30 min.
+console.log(`\n${pkg}@${version} is staged on npm. Approve it with your security key:\n  npm stage list ${pkg}\n  npm stage approve <id>\nWaiting for it to go live...`);
 let live = false;
-for (let i = 0; i < 30 && !live; i++) {
+for (let i = 0; i < 180 && !live; i++) {
   try {
     out("npm", ["view", `${pkg}@${version}`, "version"]);
     live = true;
@@ -163,7 +165,7 @@ for (let i = 0; i < 30 && !live; i++) {
     sleep(10);
   }
 }
-if (!live) fail(`${pkg}@${version} never appeared on npm`);
+if (!live) fail(`${pkg}@${version} is not live on npm after 30 minutes. Approve the staged version, then update the tap by hand`);
 
 // --- Homebrew tap
 const tarball = out("npm", ["view", `${pkg}@${version}`, "dist.tarball"]);
