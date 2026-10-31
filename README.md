@@ -354,9 +354,11 @@ One command, three destinations (npm, GitHub, Homebrew):
 `scripts/release.mjs` runs the tests (via `preversion`), bumps the version,
 and lands the bump on main **through a PR** (main takes no direct pushes).
 Once checks pass and it merges, the script tags the merge (signed, per repo
-policy) and pushes the tag — which triggers `publish.yml`, publishing to npm
-**with a provenance attestation**. It then cuts the GitHub release with
-generated notes, waits for the registry to serve the version, and updates the
+policy) and pushes the tag — which triggers `publish.yml`, **staging** the version on npm
+with a provenance attestation. It then cuts the GitHub release with
+generated notes and waits (up to 30 minutes) while you approve the staged
+version with your security key (`npm stage list @sriinnu/omit`, then
+`npm stage approve <id>`). Once npm serves it, the script updates the
 `omit` formula in [`sriinnu/homebrew-tap`](https://github.com/sriinnu/homebrew-tap),
 again through a PR. A failed step aborts the release, in order.
 
@@ -368,8 +370,9 @@ There is no npm token to keep alive. `publish.yml` uses npm's
 [trusted publishing](https://docs.npmjs.com/trusted-publishers): the workflow
 proves its identity to npm with a short-lived token GitHub mints for that run,
 and npm checks it against the publisher configured in the package's settings
-(GitHub Actions, `sriinnu/omit`, `publish.yml`). If a publish is refused, that
-form is the thing to check.
+(GitHub Actions, `sriinnu/omit`, `publish.yml`, stage-only). If staging is
+refused, that form is the thing to check. Nothing goes live without your 2FA
+approval.
 
 ## Prior art
 

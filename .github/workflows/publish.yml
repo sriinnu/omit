@@ -1,4 +1,4 @@
-name: Publish to npm
+name: Stage on npm
 
 on:
   push:
@@ -10,6 +10,10 @@ on:
 # id-token: write allows), and npm checks it against the publisher configured
 # for the package: sriinnu/omit, publish.yml. A stored token expired twice and
 # stopped two releases after their tags were already pushed.
+#
+# The workflow only STAGES the version. It goes live when a maintainer runs
+# `npm stage approve <id>` with 2FA. Trust is stage-only:
+# npm trust github @sriinnu/omit --repo sriinnu/omit --file publish.yml --allow-stage-publish
 permissions:
   contents: read
   id-token: write
@@ -25,17 +29,11 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      # Trusted publishing needs npm 11.5.1 or later. An older npm does not
-      # fail by saying so: it sends no credentials and the registry answers
-      # 404, which reads as a missing package. Say it here instead.
-      - name: npm is new enough for trusted publishing
-        run: |
-          node -e '
-            const [major, minor, patch] = process.argv[1].split(".").map(Number)
-            const older = major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))
-            if (older) { console.error(`npm ${process.argv[1]} cannot do trusted publishing: it needs 11.5.1 or later`); process.exit(1) }
-            console.log(`npm ${process.argv[1]}`)
-          ' "$(npm --version)"
+      # npm stage needs npm 11.15 or later. An older npm does not always fail
+      # by saying so (for trusted publishing it sends no credentials and the
+      # registry answers 404), so pin a known version.
+      - name: npm with stage support
+        run: npm install -g --ignore-scripts npm@11.20.0 && npm --version
 
       - name: Verify tag matches package.json version
         run: |
@@ -59,27 +57,8 @@ jobs:
             echo "already_published=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish
+      - name: Stage
         if: steps.check.outputs.already_published == 'false'
         run: |
-          # The provenance attestation comes with trusted publishing; no flag.
-          if npm publish --access public; then
-            echo "Publish succeeded."
-            exit 0
-          fi
-
-          # npm's registry can 404 a fresh scoped package's first publish for a
-          # few seconds after the write actually lands (read-replica lag), which
-          # makes npm publish report failure even though the version is live.
-          # Poll before trusting the error.
-          echo "npm publish reported failure; checking whether it landed anyway..."
-          for i in $(seq 1 10); do
-            sleep 6
-            if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
-              echo "Version $PKG_VERSION is live on the registry — treating as success."
-              exit 0
-            fi
-          done
-
-          echo "Version never appeared on the registry after retries. Publish failed."
-          exit 1
+          npm stage publish --access public --provenance
+          echo "::notice::$PKG_NAME@$PKG_VERSION is staged. Approve: npm stage list $PKG_NAME, then npm stage approve <id>."
