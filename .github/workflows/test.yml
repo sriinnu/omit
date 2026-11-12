@@ -83,3 +83,14 @@ jobs:
       - run: node --test test/codemode.test.mjs
         env:
           OMIT_CODEMODE_REQUIRED: "1"
+
+  # load-bearing: main's ruleset requires a check named `test`. The matrix above
+  # reports `test (ubuntu-latest)` and `test (macos-latest)`, so without this
+  # job the required check never arrives and every PR stays blocked.
+  required:
+    name: test
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.test.result }}" = success
