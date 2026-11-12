@@ -139,7 +139,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: sriinnu/omit@v0.7.0
+      - uses: sriinnu/omit@v0.8.0
         # with: { exec: true }   # execute receipts' `run` snippets to verify them
                                  # fully. Off by default: a PR's receipts are
                                  # untrusted code, and this runs on pull requests.
