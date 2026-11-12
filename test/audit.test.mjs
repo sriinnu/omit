@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -30,7 +30,7 @@ function repo() {
   return { dir, run, commit: (msg) => run([...IDENTITY, 'commit', '-q', '-m', msg]) }
 }
 
-const omit = (dir, args) => spawnSync('node', [CLI, ...args], { cwd: dir, encoding: 'utf8', env: ENV })
+const omit = (dir, args, env = {}) => spawnSync('node', [CLI, ...args], { cwd: dir, encoding: 'utf8', env: { ...ENV, ...env } })
 
 test('audit counts an untracked file, which git diff alone cannot see', () => {
   const { dir } = repo()
@@ -308,10 +308,82 @@ test('auditing from a subdirectory reports the same change as auditing from the 
   assert.equal(fromSub.stdout, fromRoot.stdout)
 })
 
+// ---- the gate lints the commit, not a working tree that diverged from it ----
+
+// The repo has adopted omit: editorial checks (lint among them) are enforced.
+const adopt = (run) => run(['config', 'omit.enforce', 'true'])
+
+// A stand-in eslint that fails on any file whose content says BAD, and names it.
+// node_modules is ignored, as in a real repo: the gate links ignored paths into
+// the snapshot it lints, which is how the linter binary is found there.
+function withLinter(dir, run) {
+  mkdirSync(join(dir, 'node_modules', '.bin'), { recursive: true })
+  writeFileSync(
+    join(dir, 'node_modules', '.bin', 'eslint'),
+    '#!/bin/sh\nfor f in "$@"; do if grep -q BAD "$f"; then echo "bad: $f"; exit 1; fi; done\nexit 0\n',
+    { mode: 0o755 }
+  )
+  writeFileSync(join(dir, 'eslint.config.js'), 'export default []\n')
+  writeFileSync(join(dir, '.gitignore'), 'node_modules\n')
+  run(['add', '.gitignore', 'eslint.config.js'])
+}
+
+test('partial staging with no linter installed is not blocked', () => {
+  const { dir, run } = repo()
+  adopt(run)
+  writeFileSync(join(dir, 'eslint.config.js'), 'export default []\n') // configured, but nothing to run it with
+  writeFileSync(join(dir, 'a.js'), 'const a = 1\n')
+  run(['add', 'a.js', 'eslint.config.js'])
+  writeFileSync(join(dir, 'a.js'), 'const a = 1\nconst c = 2\n') // the `git add -p` leftover
+  const r = omit(dir, ['gate'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /lint: .*unavailable/)
+})
+
+test('a linter failing on the staged content blocks, even when the disk copy was fixed', () => {
+  const { dir, run } = repo()
+  adopt(run)
+  withLinter(dir, run)
+  writeFileSync(join(dir, 'a.js'), 'const BAD = 1\n')
+  run(['add', 'a.js'])
+  writeFileSync(join(dir, 'a.js'), 'const a = 1\n') // fixed on disk, not restaged
+  const r = omit(dir, ['gate'])
+  assert.equal(r.status, 1)
+  assert.match(r.stderr, /bad: a\.js/)
+})
+
+test('clean staged content is not blocked by a broken unstaged edit, and the snapshot is cleaned up', () => {
+  const { dir, run } = repo()
+  adopt(run)
+  withLinter(dir, run)
+  writeFileSync(join(dir, 'a.js'), 'const a = 1\n')
+  run(['add', 'a.js'])
+  writeFileSync(join(dir, 'a.js'), 'const BAD = 1\n') // unstaged, not in the commit
+  const r = omit(dir, ['gate'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /lint: eslint ✅/)
+  // The snapshot symlinks node_modules in; removing it must not reach through.
+  assert.ok(existsSync(join(dir, 'node_modules', '.bin', 'eslint')))
+})
+
+test('audit --fail-on turns the verdict into a CI gate', () => {
+  const { dir } = repo()
+  writeFileSync(join(dir, 'leak.js'), `const k = "${KEY}"\n`)
+  assert.equal(omit(dir, ['audit']).status, 0)
+  assert.equal(omit(dir, ['audit', '--fail-on', 'secret']).status, 1)
+  assert.equal(omit(dir, ['audit', '--fail-on', 'hazard']).status, 1)
+  assert.equal(omit(dir, ['audit', '--fail-on', 'none']).status, 0)
+  assert.equal(omit(dir, ['audit', '--fail-on', 'loud']).status, 1)
+  const clean = repo()
+  writeFileSync(join(clean.dir, 'a.js'), 'const a = 1\n')
+  assert.equal(omit(clean.dir, ['audit', '--fail-on', 'hazard']).status, 0)
+})
+
 // ---- the gate weighs the ledger the commit carries ----
 
 test('a ledger that is not part of the commit cites nothing', () => {
   const { dir, run } = repo()
+  adopt(run)
   withDep(dir)
   ledger(dir, JSON.stringify({ claim: 'new-dep', rung: 7, dep: 'left-pad', tried: [{ rung: 2, absent: 'formatPad' }] }))
   run(['add', 'package.json', 'src/util.ts']) // the ledger itself is left untracked, as an agent's scratch file is
@@ -363,6 +435,7 @@ test('a shadowed hooks path is reported, not turned into a false objection', () 
 
 test('following the gate’s own remediation template verbatim unblocks the commit', () => {
   const { dir, run } = repo()
+  adopt(run)
   withDep(dir)
   run(['add', '-A'])
   const blocked = omit(dir, ['gate'])
@@ -373,4 +446,107 @@ test('following the gate’s own remediation template verbatim unblocks the comm
   run(['add', '-A'])
   assert.equal(omit(dir, ['verify']).status, 0, 'the printed receipt did not survive `omit verify`')
   assert.equal(omit(dir, ['gate']).status, 0, 'the printed receipt did not unblock the gate')
+})
+
+// ---- safety is enforced everywhere; editorial only where omit was adopted ----
+
+// Built from fragments: a literal would trip the scanner on this very file.
+const AWS_EXAMPLE_ID = 'AKIA' + 'IOSFODNN7EXAMPLE'
+const AWS_EXAMPLE_KEY = ['wJalrXUtnFEMI', '/K7MDENG', '/bPxRfiCY', 'EXAMPLEKEY'].join('')
+const EVAL_CALL = 'ev' + 'al(input)'
+const INNER = '.inner' + 'HTML = html'
+
+test('audit --fail-on survives a pipe: a verdict past 64KB parses whole', () => {
+  const { dir } = repo()
+  const rows = Array.from({ length: 1500 }, (_, i) => `const k${i} = "${KEY}"`)
+  writeFileSync(join(dir, 'leaks.js'), rows.join('\n') + '\n')
+  const r = omit(dir, ['audit', '--json', '--fail-on', 'secret'])
+  assert.ok(r.stdout.length > 64 * 1024, `verdict is only ${r.stdout.length} bytes`)
+  assert.equal(JSON.parse(r.stdout).hazards.length, 1500)
+  assert.equal(r.status, 1)
+})
+
+test('a repo that never adopted omit: a new dep passes the gate, with one line saying why', () => {
+  const { dir, run } = repo()
+  withDep(dir)
+  run(['add', '-A'])
+  const r = omit(dir, ['gate'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /editorial checks .* skipped .* omit\.enforce true/)
+})
+
+test('the same repo with .omit/ tracked, or omit.enforce set, blocks the uncited dep', () => {
+  const tracked = repo()
+  withDep(tracked.dir)
+  mkdirSync(join(tracked.dir, '.omit'))
+  writeFileSync(join(tracked.dir, '.omit', 'mode'), 'redline\n')
+  tracked.run(['add', '-A'])
+  assert.equal(omit(tracked.dir, ['gate']).status, 1)
+
+  const flagged = repo()
+  withDep(flagged.dir)
+  adopt(flagged.run)
+  flagged.run(['add', '-A'])
+  assert.equal(omit(flagged.dir, ['gate']).status, 1)
+
+  const optedOut = repo()
+  withDep(optedOut.dir)
+  mkdirSync(join(optedOut.dir, '.omit'))
+  writeFileSync(join(optedOut.dir, '.omit', 'mode'), 'redline\n')
+  optedOut.run(['config', 'omit.enforce', 'false'])
+  optedOut.run(['add', '-A'])
+  assert.equal(omit(optedOut.dir, ['gate']).status, 0)
+})
+
+test('injection rules skip docs, vendored and minified files, and read everything else', () => {
+  const { dir, run } = repo()
+  adopt(run)
+  mkdirSync(join(dir, 'vendor'), { recursive: true })
+  writeFileSync(join(dir, 'README.md'), `Never call ${EVAL_CALL} on user data.\n`)
+  writeFileSync(join(dir, 'app.min.js'), `el${INNER}\n`)
+  writeFileSync(join(dir, 'vendor', 'lib.js'), `el${INNER}\n`)
+  run(['add', '-A'])
+  const ok = omit(dir, ['gate'])
+  assert.equal(ok.status, 0, ok.stderr)
+  writeFileSync(join(dir, 'app.js'), `el${INNER}\n`)
+  run(['add', '-A'])
+  const bad = omit(dir, ['gate'])
+  assert.equal(bad.status, 1)
+  assert.match(bad.stderr, /injection-prone/)
+})
+
+test('secrets stay enforced in a repo that never adopted omit, but the documented AWS example is not a leak', () => {
+  const { dir, run } = repo()
+  writeFileSync(join(dir, 'docs.js'), `// aws_access_key_id = ${AWS_EXAMPLE_ID}\n// aws_secret_access_key = "${AWS_EXAMPLE_KEY}"\n`)
+  run(['add', '-A'])
+  assert.equal(omit(dir, ['gate']).status, 0)
+  writeFileSync(join(dir, 'real.js'), `const k = "${KEY}"\n`)
+  run(['add', '-A'])
+  assert.equal(omit(dir, ['gate']).status, 1)
+  // A real key that merely starts with the example's characters is still a key.
+  writeFileSync(join(dir, 'real.js'), `const k = "${AWS_EXAMPLE_ID}Z"\n`)
+  run(['add', '-A'])
+  assert.equal(omit(dir, ['gate']).status, 1)
+})
+
+test('TLS bypass blocks even where omit was never adopted', () => {
+  const { dir, run } = repo()
+  writeFileSync(join(dir, 'a.sh'), 'curl -' + 'k https://example.com\n')
+  run(['add', '-A'])
+  assert.equal(omit(dir, ['gate']).status, 1)
+})
+
+test('margin reports an injection line without failing; a secret still fails; off skips editorial, not secrets', () => {
+  const { dir, run } = repo()
+  adopt(run)
+  writeFileSync(join(dir, 'app.js'), `el${INNER}\n`)
+  run(['add', '-A'])
+  const margin = omit(dir, ['gate'], { OMIT_MODE: 'margin' })
+  assert.equal(margin.status, 0, margin.stderr)
+  assert.match(margin.stderr, /injection-prone/)
+  assert.equal(omit(dir, ['gate'], { OMIT_MODE: 'off' }).status, 0)
+  assert.equal(omit(dir, ['gate'], { OMIT_OFF: '1' }).status, 0)
+  writeFileSync(join(dir, 'real.js'), `const k = "${KEY}"\n`)
+  run(['add', '-A'])
+  for (const env of [{ OMIT_MODE: 'margin' }, { OMIT_MODE: 'off' }, { OMIT_OFF: '1' }]) assert.equal(omit(dir, ['gate'], env).status, 1)
 })

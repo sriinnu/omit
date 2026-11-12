@@ -85,6 +85,14 @@ test('a repo with no config reports nothing at all', () => {
   assert.deepEqual(scope(bin, () => lintFiles(dir, ['a.ts'])), [])
 })
 
+test('setup.cfg is a flake8 config only with a [flake8] section', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'omit-lint-'))
+  writeFileSync(join(dir, 'setup.cfg'), '[metadata]\nname = x\n')
+  assert.deepEqual(detectLinters(dir), [], 'any setup.cfg used to summon flake8')
+  writeFileSync(join(dir, 'setup.cfg'), '[flake8]\nmax-line-length = 100\n')
+  assert.deepEqual(detectLinters(dir).map((l) => l.name), ['flake8'])
+})
+
 // ---- E4: the lint path ran PR-supplied code whatever OMIT_NO_EXEC said ----
 
 test('OMIT_NO_EXEC stops the lint bridge from spawning anything', () => {

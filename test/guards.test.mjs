@@ -279,6 +279,40 @@ test('review: reinstalling replaces omit entries from another source or version,
   assert.ok(!readFileSync(join(dir, '.git', 'hooks', 'pre-commit'), 'utf8').includes('@0.0.1'))
 })
 
+test('installing over a narrower matcher moves the hook instead of doubling it', () => {
+  const { dir } = repo()
+  mkdirSync(join(dir, '.claude'))
+  const settings = join(dir, '.claude', 'settings.json')
+  writeFileSync(settings, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node /x/hooks/command-sentinel.mjs' }, { type: 'command', command: './mine.sh' }] }] } }))
+  assert.equal(cli(dir, ['hook', 'install', 'claude']).status, 0)
+  const pre = JSON.parse(readFileSync(settings, 'utf8')).hooks.PreToolUse
+  const all = pre.flatMap((g) => g.hooks)
+  assert.equal(all.filter((h) => h.command.includes('command-sentinel')).length, 1, 'the sentinel fires twice per Bash call')
+  assert.ok(pre.some((g) => g.matcher === 'Bash|PowerShell' && g.hooks.some((h) => h.command.includes('command-sentinel'))))
+  assert.ok(all.some((h) => h.command === './mine.sh'), 'the unrelated hook survives')
+})
+
+test('the guard and leak CLI entry points refuse a command too long to check', () => {
+  const { dir } = repo()
+  const long = 'echo "' + 'a'.repeat(65000)
+  for (const cmd of ['guard', 'leak']) {
+    const r = cli(dir, [cmd, long])
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /too long/)
+  }
+})
+
+test('init --check reports drift without writing', () => {
+  const { dir } = repo()
+  assert.equal(cli(dir, ['init', 'agents']).status, 0)
+  assert.equal(cli(dir, ['init', '--check']).status, 0)
+  writeFileSync(join(dir, 'AGENTS.md'), 'edited by the user\n')
+  const r = cli(dir, ['init', '--check'])
+  assert.equal(r.status, 1)
+  assert.match(r.stdout, /drifted\s+AGENTS\.md/)
+  assert.equal(readFileSync(join(dir, 'AGENTS.md'), 'utf8'), 'edited by the user\n', 'check must never write')
+})
+
 // The day-to-day tester's reproductions: ordinary work that was blocked, and a gate that never ran.
 test('usability: redirects to /dev/null, grep patterns, clearing innerHTML and $HOME subpaths pass', () => {
   const { dir } = repo()

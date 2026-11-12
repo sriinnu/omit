@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isManifest, addedDeps } from '../lib/deps.mjs'
-import { fileAtRevision } from '../lib/git.mjs'
+import { fileAtRevision, addedLinesOf } from '../lib/git.mjs'
 import { findHazards } from '../lib/hazards.mjs'
 
 const configPath = process.argv[2]
@@ -76,7 +76,7 @@ for (const task of cfg.tasks) {
           newDeps.push(...addedDeps(basename(path), before.present ? before.text : '', after))
         }
       }
-      const addedLines = sh('git diff --cached', dir).split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1))
+      const addedLines = addedLinesOf(sh('git diff --cached', dir))
       hazards = findHazards(addedLines)
     } catch (e) {
       // Swallowing this printed "deps +0 · hazards 0" for a run nothing measured.

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync, statSync, symlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, statSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -94,6 +94,25 @@ test('doctor finds missing scripts, duplicate registrations and legacy tool name
   assert.ok(report.findings.some(f => f.level === 'error' && /missing/.test(f.message)))
 })
 
+test('doctor reads settings.local.json and names a near-miss OMIT_OFF', () => {
+  const cwd = temp()
+  mkdirSync(join(cwd, '.claude'), { recursive: true })
+  writeFileSync(join(cwd, '.claude', 'settings.local.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node /nonexistent/x.mjs' }] }] } }))
+  const report = doctor(cwd, temp())
+  assert.ok(report.findings.some((f) => f.file?.endsWith('settings.local.json') && f.level === 'error' && /missing/.test(f.message)))
+  const was = process.env.OMIT_OFF
+  process.env.OMIT_OFF = 'true'
+  try {
+    // OMIT_OFF=true silently does nothing; a diagnostic surface has to say so.
+    assert.ok(doctor(cwd, temp()).findings.some((f) => f.level === 'warning' && /OMIT_OFF=true/.test(f.message)))
+    process.env.OMIT_OFF = '0' // "not off" is spelled right, so nothing to warn about
+    assert.ok(!doctor(cwd, temp()).findings.some((f) => /OMIT_OFF/.test(f.message)))
+  } finally {
+    if (was === undefined) delete process.env.OMIT_OFF
+    else process.env.OMIT_OFF = was
+  }
+})
+
 test('doctor handles corrupt configuration and reports JSON with failing exit status', () => {
   const cwd = temp()
   const global = temp()
@@ -101,6 +120,19 @@ test('doctor handles corrupt configuration and reports JSON with failing exit st
   const r = run(['doctor', '--json'], cwd, undefined, { CODEX_HOME: global })
   assert.equal(r.status, 1)
   assert.ok(JSON.parse(r.stdout).findings.some(f => f.level === 'error'))
+})
+
+test('claude reinstall without --context keeps the opt-in sentinel, and a null group is not a crash', () => {
+  const cwd = temp()
+  assert.equal(run(['hook', 'install', 'claude', '--context'], cwd).status, 0)
+  const path = join(cwd, '.claude', 'settings.json')
+  const doc = JSON.parse(readFileSync(path, 'utf8'))
+  doc.hooks.PreToolUse.push(null)
+  writeFileSync(path, JSON.stringify(doc))
+  const r = run(['hook', 'install', 'claude'], cwd)
+  assert.equal(r.status, 0, r.stderr)
+  const after = JSON.parse(readFileSync(path, 'utf8'))
+  for (const event of ['PreToolUse', 'PostToolUse']) assert.ok(after.hooks[event].some((g) => g?.hooks?.some((h) => h.command.includes('context-sentinel.mjs'))))
 })
 
 test('context hooks install for either host and discoverable skill copies without overwrite', () => {

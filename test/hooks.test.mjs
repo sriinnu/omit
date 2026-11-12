@@ -359,6 +359,19 @@ test('a manifest rewritten by Bash is checked like any other edit', () => {
   assert.equal(r.status, 2, `expected a blocking exit 2, got ${r.status}: ${r.stderr}`)
 })
 
+test('an added line beginning with ++ is scanned, not dropped as a diff header', () => {
+  const { dir, run } = repo()
+  writeFileSync(join(dir, 'notes.md'), 'first\n')
+  run(['add', 'notes.md'])
+  commit(run, 'notes')
+  // In the patch this line is `+++ AKIA…`: the hook used the same prefix filter
+  // the audit had already fixed, and a secret on such a line went unscanned.
+  writeFileSync(join(dir, 'notes.md'), `first\n++ AKIA${'ABCDEFGHIJKLMNOP'}\n`)
+  const r = hook('hazard-sentinel.mjs', edit(dir, join(dir, 'notes.md')))
+  assert.equal(r.status, 2, r.stderr)
+  assert.match(r.stderr, /aws-access-key/)
+})
+
 test('a file written with a redirect is scanned', () => {
   const { dir } = repo()
   const r = hook('hazard-sentinel.mjs', bash(dir, `cat > config.js <<'EOF'\n${SECRET}\nEOF`))
