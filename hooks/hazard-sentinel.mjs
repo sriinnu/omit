@@ -10,7 +10,7 @@
 // no sentinel.
 import { readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
-import { git, fileAtRevision, repoRelPath, repoRootStrict } from '../lib/git.mjs'
+import { git, fileAtRevision, repoRelPath, repoRootStrict, addedLinesOf } from '../lib/git.mjs'
 import { findHazards } from '../lib/hazards.mjs'
 import { patchPaths } from '../lib/patch-paths.mjs'
 import { proposedLines } from '../lib/proposed.mjs'
@@ -56,10 +56,7 @@ function addedLines(abs, rel, root) {
   // edit's), and treating it as an empty file would scan nothing at all.
   if (head.failed) throw new Error(`git could not read ${rel} at HEAD (${head.reason}) — the added lines could not be isolated`)
   if (!head.present) return readLines(abs)
-  return git(root, ['diff', 'HEAD', '--', rel])
-    .split('\n')
-    .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
-    .map((l) => l.slice(1))
+  return addedLinesOf(git(root, ['diff', 'HEAD', '--', rel]))
 }
 
 // The shapes of a shell command that writes file content. This runs on EVERY Bash

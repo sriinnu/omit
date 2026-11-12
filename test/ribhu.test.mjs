@@ -18,7 +18,7 @@ const HOOKS = fileURLToPath(new URL('../hooks/', import.meta.url))
 const ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', OMIT_OFF: '' }
 const COMMIT = ['-c', 'commit.gpgsign=false', '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m']
 // Assembled, so this file does not itself carry something shaped like a key.
-const FAKE_KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+const FAKE_KEY = 'AKIA' + 'ABCDEFGHIJKLMNOP'
 // Every tool Ribhu registers (crates/ribhu-tools), for checking what a matcher selects.
 const RIBHU_TOOLS = 'ast_edit bash browser code_query code_rename computer diagnostics edit glob grep ls multi_edit pdf read repo_map skill todo_write web_search web write'.split(' ')
 

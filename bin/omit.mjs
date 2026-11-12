@@ -3,9 +3,10 @@
 // CI, and any other agent's hook system all call the same commands.
 //
 //   omit init [agents|claude|cursor|cline|windsurf|all]   copy rule files into this repo
-//   omit audit [--base <ref>|--session] [--json|--markdown]  net diff, new deps, hazards
+//   omit audit [--base <ref>|--session] [--json|--markdown] [--fail-on <none|secret|hazard>]  net diff, new deps, hazards
+//   omit init --check                                     report rule files that drifted from this omit version
 //   omit check <file...>                                  hazard-scan specific files
-//   omit gate                                             audit the staged diff; fail on hazards/uncited deps
+//   omit gate                                             audit the staged diff. Always blocks secrets and TLS bypass; injection, uncited deps, refuted receipts and lint only in repos that adopted omit (.omit/ tracked, or git config omit.enforce true), per mode
 //   omit verify                                           re-check every claim in .omit/receipts.jsonl
 //   omit leak "<cmd>"                                     would this command print a real secret to stdout?
 //   omit hook install                                     add the gate to .git/hooks/pre-commit
@@ -19,15 +20,15 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeF
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isManifest, addedDeps, unparsedDependencyFile } from '../lib/deps.mjs'
-import { git, probe, repoRoot, fileAtRevision, GitError, parseNumstat, readBaseline, snapshotTree } from '../lib/git.mjs'
+import { git, probe, repoRoot, fileAtRevision, GitError, parseNumstat, readBaseline, snapshotTree, addedLinesOf } from '../lib/git.mjs'
 import { LEDGER, verifyLedger, newDepCitations } from '../lib/receipts.mjs'
-import { findHazards } from '../lib/hazards.mjs'
-import { lintFiles } from '../lib/lint.mjs'
+import { findHazards, isInjectionExempt, MAX_COMMAND, TOO_LONG } from '../lib/hazards.mjs'
+import { lintFiles, lintIndex } from '../lib/lint.mjs'
 import { assessCommand } from '../lib/danger.mjs'
 import { assessLeak } from '../lib/leaks.mjs'
 import { execute, serve } from '../lib/codemode.mjs'
 import { doctor } from '../lib/doctor.mjs'
-import { DESCRIBE, MODES, readMode, writeMode } from '../lib/mode.mjs'
+import { DESCRIBE, MODES, readMode, writeMode, offMisspelled } from '../lib/mode.mjs'
 
 const cwd = process.cwd()
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -80,6 +81,25 @@ function init(pick = 'agents') {
   console.log('\nDraft less. Cite everything. Cut last.')
 }
 
+// init never overwrites, so an installed rule file can drift from the package
+// forever without saying so. --check reports the drift and writes nothing;
+// exit 1 lets CI notice a stale rule file the way it notices a stale pin.
+function initCheck() {
+  let drifted = 0
+  for (const [src, dest] of targets.all) {
+    if (!existsSync(dest)) {
+      console.log(`missing  ${dest}`)
+      continue
+    }
+    if (lf(readFileSync(dest, 'utf8')) === lf(readFileSync(join(pkgRoot, src), 'utf8'))) console.log(`current  ${dest}`)
+    else {
+      drifted++
+      console.log(`drifted  ${dest} — differs from omit ${version}; init never overwrites, so review and update it by hand`)
+    }
+  }
+  process.exitCode = drifted ? 1 : 0
+}
+
 // ---------- audit / gate ----------
 const die = (msg) => {
   console.error(`omit: ${msg}`)
@@ -101,6 +121,8 @@ const splitLines = (text) => {
   if (lines[lines.length - 1] === '') lines.pop()
   return lines
 }
+
+const lf = (s) => s.replace(/\r\n/g, '\n') // a CRLF checkout is not a different file
 
 // The blob the index holds for a path — the file as the commit would contain it,
 // or null when the index does not hold it at all. Written as `:0:<path>` rather
@@ -159,30 +181,6 @@ function requireRevision(root, range) {
   }
 }
 
-// The added lines, which is the set every hazard rule reads — so it has to be all
-// of them. A `startsWith('+++')` filter drops a real content line that begins
-// with `++` (the patch prefixes it to `++++`), which hides a secret on that line
-// and makes the count disagree with numstat. Skip the file header as a block.
-function addedLinesOf(patch) {
-  const added = []
-  let header = true
-  for (const l of patch.split('\n')) {
-    if (l.startsWith('diff --git ')) {
-      header = true
-      continue
-    }
-    if (header) {
-      // The block ends at the post-image header or the first hunk. Every other
-      // header line (index, mode, similarity, rename) starts with neither, so
-      // skipping the block cannot drop an added line.
-      if (l.startsWith('+++ ') || l.startsWith('@@')) header = false
-      continue
-    }
-    if (l.startsWith('+')) added.push(l.slice(1))
-  }
-  return added
-}
-
 // The receipts the gate weighs are the ones in the COMMIT, not the ones on disk.
 // `--cached` judges the index, and a working-tree ledger the commit does not
 // carry — or contradicts — verified nothing that ships: an untracked ledger used
@@ -195,7 +193,6 @@ function ledgerForChange(root, staged) {
   try {
     disk = readFileSync(join(root, LEDGER), 'utf8')
   } catch {}
-  const lf = (s) => s.replace(/\r\n/g, '\n') // a CRLF checkout is not a different ledger
   if (disk === null || lf(disk) !== lf(stagedLedger)) {
     die(
       `the staged ${LEDGER} is not the file on disk — receipts are checked against the working tree, so a ledger that differs from the one being committed was never the one checked. Stage the same content, or restore it with \`git checkout -- ${LEDGER}\`.`
@@ -221,7 +218,7 @@ function hooksPathAt(root) {
 // a snapshot of the tree now, two trees, so an untracked file is already in the
 // second one and pre-session dirt is in both. omit's own directory is left out
 // by pathspec, so numstat and the patch still describe the same diff.
-function collect(diffRange, session = null) {
+function collect(diffRange, session = null, { lint: wantLint = true } = {}) {
   const root = rootOrDie()
   const staged = diffRange === '--cached'
   if (!staged && !session) requireRevision(root, diffRange)
@@ -260,7 +257,8 @@ function collect(diffRange, session = null) {
     }
   }
 
-  const patchAdded = addedLinesOf(git(root, ['diff', '-M', ...range]))
+  const patch = git(root, ['diff', '-M', ...range])
+  const patchAdded = addedLinesOf(patch)
   // numstat and the patch describe the same diff, so their added-line totals have
   // to agree. If they do not, part of the change went unread — and "scanned
   // nothing" must not be able to render as "found nothing".
@@ -270,6 +268,10 @@ function collect(diffRange, session = null) {
 
   const addedLines = [...patchAdded]
   for (const lines of untracked.values()) addedLines.push(...lines)
+  // The injection rules skip docs, vendored and generated files; secrets and TLS
+  // bypass read every added line. `codeLines` is the subset the injection rules see.
+  const codeLines = addedLinesOf(patch, (p) => !isInjectionExempt(p))
+  for (const [path, lines] of untracked) if (!isInjectionExempt(path)) codeLines.push(...lines)
 
   // numstat calls a path binary: either it is one, or an attribute says so — and
   // the second is a way to erase a file from the scan. `src/config.js -diff` in
@@ -282,6 +284,7 @@ function collect(diffRange, session = null) {
     if (text === null) continue // gone from the index, or deleted: nothing left to scan
     files.push({ path: b.path, oldPath: b.oldPath, added: 0, deleted: 0, binary: true })
     addedLines.push(...splitLines(text))
+    if (!isInjectionExempt(b.path)) codeLines.push(...splitLines(text))
   }
 
   // Dependencies are compared as parsed sets between the two revisions, so a
@@ -300,7 +303,7 @@ function collect(diffRange, session = null) {
   // that have nothing to do with a dependency.
   const unparsed = [...new Set(files.map((f) => f.path).filter((p) => unparsedDependencyFile(p)))].sort()
 
-  const hazards = findHazards(addedLines)
+  const hazards = [...findHazards(addedLines).filter((h) => h.type !== 'injection'), ...findHazards(codeLines).filter((h) => h.type === 'injection')]
   const footnotes = addedLines.filter((l) => /omitted:/.test(l)).length
   const loadBearing = addedLines.filter((l) => /load-bearing:/.test(l)).length
 
@@ -310,7 +313,9 @@ function collect(diffRange, session = null) {
   const ledger = ledgerForChange(root, staged)
   const uncitedDeps = newDeps.filter((d) => ledger.citations.get(d.dep)?.status !== 'verified')
 
-  const lint = lintFiles(root, files.map((f) => f.path).filter((p) => existsSync(join(root, p))))
+  // The gate lints the index, an audit lints the working tree; null is "not asked".
+  const changed = files.map((f) => f.path)
+  const lint = !wantLint ? null : staged ? lintIndex(root, changed) : lintFiles(root, changed.filter((p) => existsSync(join(root, p))))
 
   return {
     files,
@@ -343,6 +348,7 @@ function collect(diffRange, session = null) {
 const lintReason = (l) => (l.output ?? '').replace(/^not run: /, '').split('\n')[0].slice(0, 80)
 
 const lintLine = (lint) => {
+  if (lint === null) return 'skipped'
   if (!lint || lint.length === 0) return 'no linter configured'
   const ran = lint.filter((l) => l.status === 'ok' || l.status === 'fail')
   const idle = lint.filter((l) => l.status !== 'ok' && l.status !== 'fail')
@@ -386,43 +392,71 @@ function render(r, fmt) {
 
 function audit(args) {
   const baseIdx = args.indexOf('--base')
-  if (baseIdx !== -1 && (!args[baseIdx + 1] || args[baseIdx + 1].startsWith('-'))) die('usage: omit audit [--base <ref> | --session] [--json|--markdown]')
+  if (baseIdx !== -1 && (!args[baseIdx + 1] || args[baseIdx + 1].startsWith('-'))) die('usage: omit audit [--base <ref> | --session] [--json|--markdown] [--fail-on <none|secret|hazard>]')
   const base = baseIdx !== -1 ? args[baseIdx + 1] : 'HEAD'
   const fmt = args.includes('--json') ? 'json' : args.includes('--markdown') ? 'markdown' : 'text'
+  // The verdict is advisory by default; --fail-on lets CI gate on it without a
+  // second run (a second run would execute the ledger's snippets twice).
+  const failIdx = args.indexOf('--fail-on')
+  const failOn = failIdx !== -1 ? args[failIdx + 1] : 'none'
+  if (!['none', 'secret', 'hazard'].includes(failOn)) die('usage: omit audit [--base <ref> | --session] [--json|--markdown] [--fail-on <none|secret|hazard>]')
   let session = null
   if (args.includes('--session')) {
     if (baseIdx !== -1) die('--session and --base name different starting points; pick one')
     session = readBaseline(rootOrDie())
     if (!session) die('no session baseline recorded — the SessionStart hook writes one (omit hook install claude). Use --base <ref> instead.')
   }
-  console.log(render(collect(base, session), fmt))
+  const r = collect(base, session)
+  console.log(render(r, fmt))
+  // exitCode, not exit(): a piped stdout is async, and exit() would cut the verdict off.
+  if ((failOn === 'secret' && r.hazards.some((h) => h.type === 'secret')) || (failOn === 'hazard' && r.hazards.length)) process.exitCode = 1
+}
+
+// A repo adopts omit's editorial checks by tracking `.omit/` (in HEAD or the
+// index, so the commit that adds it is already judged) or with
+// `git config omit.enforce true`; `false` opts out even then. Everything else is
+// someone else's repo, where uncited deps and lint would be objections to a
+// convention they never agreed to.
+function adopted(root) {
+  const flag = probe(root, ['config', '--type=bool', '--get', 'omit.enforce'])
+  if (flag.ok) return flag.out.trim() === 'true'
+  return [['ls-files', '--', '.omit'], ['ls-tree', '-r', '--name-only', 'HEAD', '--', '.omit']].some((args) => probe(root, args).out?.trim())
 }
 
 function gate() {
-  const r = collect('--cached')
+  const root = rootOrDie()
+  const mode = readMode(cwd)
+  const editorial = mode !== 'off' && adopted(root)
+  const r = collect('--cached', null, { lint: editorial })
   console.log(render(r, 'text'))
-  // A shadowed hooks directory is reported, not fatal: `core.hooksPath` is a
-  // legitimate global setup (a hooks manager, a shared hooks repo), and failing
-  // every commit over the user's own configuration would be a false objection.
-  // The row above already says the gate omit installs is not the hook git runs;
-  // `hook install` now writes where git actually looks, so the honest fix lives
-  // there rather than in refusing to work.
+  // Safety: enforced in every repo and every mode, `off` included. A shadowed
+  // hooks directory is reported, not fatal: `core.hooksPath` is a legitimate
+  // global setup, and failing every commit over it would be a false objection.
   const secrets = r.hazards.filter((h) => h.type === 'secret')
   if (secrets.length) {
     console.error(`\n⛔ omit gate: ${secrets.length} secret(s) staged. Move to env/secrets manager, rotate if real, restage.`)
     process.exit(1)
   }
+  if (r.hazards.some((h) => h.type === 'tls')) {
+    console.error(`\n⛔ omit gate: TLS-verification bypass staged. Point TLS at the CA bundle instead of switching verification off, or mark a reviewed line with omit-allow: <reason>.`)
+    process.exit(1)
+  }
+  if (!editorial) {
+    console.log(`omit gate: editorial checks (injection, new deps, receipts, lint) skipped — ${mode === 'off' ? 'mode is off' : 'this repo has not adopted omit; opt in with `git config omit.enforce true` or by committing .omit/'}.`)
+    return
+  }
+  // Editorial objections: redline and rewrite block; margin reports and passes.
+  const objections = []
   if (r.receiptFailures.length) {
-    console.error(
-      `\n⛔ omit gate: ${r.receiptFailures.length} receipt(s) in ${LEDGER} did not survive their own check — a refuted claim is a fabricated citation:\n` +
+    objections.push(
+      `${r.receiptFailures.length} receipt(s) in ${LEDGER} did not survive their own check — a refuted claim is a fabricated citation:\n` +
         r.receiptFailures.map((f) => `  line ${f.at} (${f.claim ?? 'no claim'}): ${f.checks.filter((c) => c.ok === false).map((c) => c.detail).join('; ')}`).join('\n') +
         `\nFix the receipt or the code it cites, then re-run.`
     )
-    process.exit(1)
   }
   if (r.uncitedDeps.length) {
-    console.error(
-      `\n⛔ omit gate: new dep(s) without a verified receipt: ${r.uncitedDeps.map((d) => d.dep).join(', ')}.` +
+    objections.push(
+      `new dep(s) without a verified receipt: ${r.uncitedDeps.map((d) => d.dep).join(', ')}.` +
         (r.ledgerInChange
           ? ''
           : `\n   ${LEDGER} is not part of this commit — receipts are read from the index, so a ledger that is not being committed cites nothing.`) +
@@ -436,17 +470,18 @@ function gate() {
         `  {"claim":"new-dep","rung":7,"dep":"${r.uncitedDeps[0].dep}","tried":[{"rung":2,"absent":"<symbol you searched for>"}]}\n` +
         `Run \`omit verify\` to check it before committing.`
     )
-    process.exit(1)
   }
-  if (r.hazards.length) {
-    console.error(`\n⚠ omit gate: injection-prone or TLS-bypass lines staged. Parameterize, use safe APIs, point TLS at the CA bundle instead of switching verification off, or mark reviewed lines with omit-allow: <reason>.`)
-    process.exit(1)
+  if (r.hazards.some((h) => h.type === 'injection')) {
+    objections.push(`injection-prone lines staged. Parameterize, use safe APIs, or mark reviewed lines with omit-allow: <reason>.`)
   }
   const lintFails = (r.lint ?? []).filter((l) => !l.ok)
   if (lintFails.length) {
-    console.error(`\n⛔ omit gate: the repo's own linter is failing on staged files.\n${lintFails.map((l) => `[${l.linter}]\n${l.output}`).join('\n')}`)
-    process.exit(1)
+    objections.push(`the repo's own linter is failing on staged files.\n${lintFails.map((l) => `[${l.linter}]\n${l.output}`).join('\n')}`)
   }
+  if (!objections.length) return
+  const block = mode !== 'margin'
+  console.error(`\n${objections.map((o) => `${block ? '⛔' : '⚠'} omit gate: ${o}`).join('\n\n')}${block ? '' : '\n\n(margin mode: reported, not enforced)'}`)
+  if (block) process.exit(1)
 }
 
 function check(files) {
@@ -498,6 +533,9 @@ function guard(args) {
     console.error('usage: omit guard "<shell command>"')
     process.exit(1)
   }
+  // The hooks refuse an unreadable command; the CLI entry points wire into other
+  // hosts' hooks, so they carry the same bound rather than trusting the caller.
+  if (command.length > MAX_COMMAND) die(TOO_LONG)
   const findings = assessCommand(command)
   if (findings.length === 0) {
     console.log('ok')
@@ -513,6 +551,7 @@ function leak(args) {
     console.error('usage: omit leak "<shell command>"')
     process.exit(1)
   }
+  if (command.length > MAX_COMMAND) die(TOO_LONG)
   const findings = assessLeak(command)
   if (findings.length === 0) {
     console.log('ok')
@@ -558,7 +597,7 @@ function hookInstallCodex(options = [], host = 'codex') {
 
   const mergeHook = (event, matcher, name) => {
     doc.hooks[event] ??= []
-    let group = doc.hooks[event].find((g) => g.matcher === matcher)
+    let group = doc.hooks[event].find((g) => g?.matcher === matcher)
     if (!group) {
       group = { matcher, hooks: [] }
       doc.hooks[event].push(group)
@@ -571,8 +610,20 @@ function hookInstallCodex(options = [], host = 'codex') {
 
   if (host === 'claude') {
     // The plugin's own hooks.json is the one list of what runs under Claude
-    // Code, so a project install cannot drift from the plugin.
+    // Code, so a project install cannot drift from the plugin. An older install
+    // may carry omit's hooks under narrower or Codex-shaped matchers ("Bash",
+    // "apply_patch|Edit|Write"); merging into those doubles every sentinel the
+    // matchers share. So the omit hooks this run re-adds come out first — whatever
+    // group holds them — and the plugin's list goes in. Everyone else's hooks
+    // stay, and so do omit's opt-in ones this run does not re-add (context-sentinel
+    // without --context).
     const plugin = JSON.parse(readFileSync(join(pkgRoot, 'hooks', 'hooks.json'), 'utf8'))
+    const readded = new Set(Object.values(plugin.hooks).flatMap((groups) => groups.flatMap((g) => g.hooks.map((h) => /hooks\/([\w-]+)\.mjs/.exec(h.command)[1]))))
+    if (options.includes('--context')) readded.add('context-sentinel')
+    for (const [event, groups] of Object.entries(doc.hooks)) {
+      for (const g of groups) if (Array.isArray(g?.hooks)) g.hooks = g.hooks.filter((h) => !readded.has(hookIdentity(h?.command)?.split(' ')[0]))
+      doc.hooks[event] = groups.filter((g) => !Array.isArray(g?.hooks) || g.hooks.length > 0)
+    }
     for (const [event, groups] of Object.entries(plugin.hooks)) {
       for (const g of groups) for (const h of g.hooks) mergeHook(event, g.matcher, /hooks\/([\w-]+)\.mjs/.exec(h.command)[1])
     }
@@ -760,6 +811,8 @@ function mode(args) {
   const now = readMode(cwd)
   console.log(`omit mode: ${now}. ${DESCRIBE[now]}`)
   if (args[0] && now !== args[0]) console.log('  OMIT_OFF or OMIT_MODE in this environment overrides .omit/mode.')
+  const off = offMisspelled()
+  if (off !== null) console.error(`omit: OMIT_OFF=${off} does not disable the hooks — only the literal OMIT_OFF=1 does.`)
 }
 
 // ---------- codemode ----------
@@ -820,10 +873,10 @@ try {
     console.error(`omit: unrecognized 'hook install' target '${rest[1]}' — usage: omit hook install [codex|claude|ribhu]`)
     process.exit(1)
   }
-  else if (cmd === 'init') init(rest[0])
+  else if (cmd === 'init') rest[0] === '--check' ? initCheck() : init(rest[0])
   else if (targets[cmd]) init(cmd) // back-compat: `omit cursor`
   else {
-    console.error('usage: omit <init|audit|check|gate|lint|guard|leak|verify|mode|codemode|context|doctor [--json]|hook install [codex|claude|ribhu] [--context]|hook run <hook>>')
+    console.error('usage: omit <init [--check]|audit [--fail-on <none|secret|hazard>]|check|gate|lint|guard|leak|verify|mode|codemode|context|doctor [--json]|hook install [codex|claude|ribhu] [--context]|hook run <hook>>')
     process.exit(cmd ? 1 : 0)
   }
 } catch (e) {

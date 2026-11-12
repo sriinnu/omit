@@ -17,10 +17,21 @@ inputs:
       arbitrary: with exec off, the verdict reports the linter as not run.
     required: false
     default: 'false'
+  fail-on:
+    description: >
+      Fail the check when the verdict carries hazards: "secret" fails on
+      hardcoded secrets, "hazard" on any hazard (secrets, injection, TLS).
+      Default "none": the verdict is a comment, and the check stays green.
+    required: false
+    default: 'none'
 runs:
   using: composite
   steps:
     - name: Run omit audit
+      id: audit
+      # The verdict is commented even when fail-on refuses it; the last step
+      # turns the refusal into a failed check.
+      continue-on-error: true
       shell: bash
       env:
         # Inverted on purpose. The obvious `exec == 'true' && '' || '1'` never
@@ -30,17 +41,63 @@ runs:
         # an explicit off-value for OMIT_NO_EXEC, so the input can never mean
         # "maybe". Anything that isn't exactly 'true' stays disabled.
         OMIT_NO_EXEC: ${{ inputs.exec != 'true' && '1' || '0' }}
+        # load-bearing: inputs reach the script through the environment, never
+        # spliced into it: `${{ }}` inside run becomes shell text before the shell parses,
+        # so a chosen base ref could carry a command of its own.
+        OMIT_BASE: ${{ inputs.base }}
+        OMIT_FAIL_ON: ${{ inputs.fail-on }}
+        PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
       run: |
-        BASE="${{ inputs.base }}"
-        if [ -z "$BASE" ]; then BASE="origin/${{ github.event.pull_request.base.ref }}"; fi
-        git fetch --depth=1 origin "${{ github.event.pull_request.base.ref }}" || true
+        BASE="$OMIT_BASE"
+        if [ -z "$BASE" ]; then BASE="origin/$PR_BASE_REF"; fi
+        git fetch --depth=1 origin "$PR_BASE_REF" || true
         # Outside the workspace: the redirect creates the file before the audit
         # runs, and the audit counts untracked files — a verdict written into
         # the checkout reports itself as one more changed file.
-        node "${{ github.action_path }}/bin/omit.mjs" audit --base "$BASE" --markdown > "$RUNNER_TEMP/omit-verdict.md"
+        node "${{ github.action_path }}/bin/omit.mjs" audit --base "$BASE" --markdown --fail-on "$OMIT_FAIL_ON" > "$RUNNER_TEMP/omit-verdict.md"
         cat "$RUNNER_TEMP/omit-verdict.md"
     - name: Comment on PR
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-      run: gh pr comment ${{ github.event.pull_request.number }} --body-file "$RUNNER_TEMP/omit-verdict.md" --repo ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        # An audit that produced nothing has nothing to comment; an empty
+        # verdict would read as a clean one.
+        if [ ! -s "$RUNNER_TEMP/omit-verdict.md" ]; then
+          echo "omit: the audit produced no verdict — nothing to comment."
+          exit 1
+        fi
+        # One comment per PR, edited in place: a marker finds omit's previous
+        # verdict, so a push updates it instead of stacking another.
+        MARKER='<!-- omit verdict -->'
+        { printf '%s\n' "$MARKER"; cat "$RUNNER_TEMP/omit-verdict.md"; } > "$RUNNER_TEMP/omit-comment.md"
+        # load-bearing: only the bot's own comment counts. A marker anyone can plant
+        # would make this step PATCH a stranger's comment. The first match is taken
+        # in bash: `head` would close the pipe early and SIGPIPE gh under pipefail.
+        IDS=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$MARKER\"))) | .id")
+        COMMENT_ID=${IDS%%
+        if [ -n "$COMMENT_ID" ]; then
+          gh api --method PATCH "repos/$REPO/issues/comments/$COMMENT_ID" -F body=@"$RUNNER_TEMP/omit-comment.md"
+        else
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/omit-comment.md"
+        fi
+    - name: Enforce fail-on
+      if: steps.audit.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "omit: the audit could not complete, or the verdict carries hazards with fail-on set — see the PR comment."
+        exit 1
+\n'*}
+        if [ -n "$COMMENT_ID" ]; then
+          gh api --method PATCH "repos/$REPO/issues/comments/$COMMENT_ID" -F body=@"$RUNNER_TEMP/omit-comment.md"
+        else
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/omit-comment.md"
+        fi
+    - name: Enforce fail-on
+      if: steps.audit.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "omit: the audit could not complete, or the verdict carries hazards with fail-on set — see the PR comment."
+        exit 1

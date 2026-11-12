@@ -17,7 +17,7 @@ const BIN = fileURLToPath(new URL('../bin/omit.mjs', import.meta.url))
 // No global config: a developer's git config must not leak into the fixture.
 const ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' }
 // Assembled, so this file does not itself carry something shaped like a key.
-const FAKE_KEY = 'AKIA' + 'IOSFODNN7EXAMPLE'
+const FAKE_KEY = 'AKIA' + 'ABCDEFGHIJKLMNOP'
 
 function repo() {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'omit-codemode-')))

@@ -3,6 +3,9 @@
   "version": "0.7.0",
   "description": "Omit needless code. Editorial discipline for AI coding agents: draft less, cite everything, cut last: enforced by hooks, a pre-commit gate, and a PR bot, whatever agent writes the code.",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "omit": "bin/omit.mjs"
   },

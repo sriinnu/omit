@@ -107,19 +107,22 @@ The enforcement logic lives in a zero-dependency CLI, not in any one vendor's ho
 
 ```
 npx @sriinnu/omit hook install   # git pre-commit: audits the staged diff,
-                                 # fails on secrets, injections, uncited deps
+                                 # fails on secrets and TLS bypass; where omit was
+                                 # adopted, also injections, uncited deps, lint
 npx @sriinnu/omit audit          # net diff (untracked files included), new deps, hazards
 npx @sriinnu/omit audit --session  # the same, counted from when the agent session began
+npx @sriinnu/omit audit --fail-on hazard  # the same, but exit 1 on hazards (secret | none too)
 npx @sriinnu/omit check <files>  # hazard-scan specific files (wire into any hook system)
 npx @sriinnu/omit lint [files]   # run the repo's OWN linter on changed files
 npx @sriinnu/omit verify         # re-check every claim in .omit/receipts.jsonl
 npx @sriinnu/omit guard "<cmd>"  # is this shell command a disaster? (wire into any hook system)
 npx @sriinnu/omit leak "<cmd>"   # would this command print a real secret to stdout?
-npx @sriinnu/omit gate           # the pre-commit check, callable from anywhere
+npx @sriinnu/omit gate           # the pre-commit check: secrets/TLS everywhere, the rest where omit was adopted
 npx @sriinnu/omit hook install codex  # write .codex/hooks.json — live sentinels inside Codex CLI
 npx @sriinnu/omit hook install ribhu  # write .ribhu/hooks.json — live sentinels inside Ribhu
 npx @sriinnu/omit hook run <hook>     # run one hook on a payload from stdin (what installs from an npx cache call)
 npx @sriinnu/omit mode [<mode>]       # print or set the enforcement mode
+npx @sriinnu/omit init --check        # report installed rule files that drifted from this version; writes nothing
 ```
 
 And server-side, the GitHub Action comments the verdict on every PR regardless of what wrote the code:
@@ -140,6 +143,8 @@ jobs:
         # with: { exec: true }   # execute receipts' `run` snippets to verify them
                                  # fully. Off by default: a PR's receipts are
                                  # untrusted code, and this runs on pull requests.
+        # with: { fail-on: secret }  # fail the check on hardcoded secrets
+                                     # (hazard = any hazard; default none = comment only)
 ```
 
 ```
@@ -215,7 +220,13 @@ args = ["codemode"]
 | `rewrite` | Redline, and question the assignment itself before building |
 | `off` | Editorial gates are quiet |
 
-The mode is enforced by the hooks, not left to the model: it lives in `.omit/mode` (or `OMIT_MODE`), set by the user with `/omit <mode>` in Claude Code or `omit mode <mode>` in a shell. The agent cannot set it: the tamper sentinel blocks that. Safety gates (destructive commands, secret leaks and literals, TLS bypass, hook tampering) block in every mode; only `OMIT_OFF=1` in the harness's environment silences them. The mode governs the agent's session hooks only: `omit gate` (the pre-commit hook and CI) always enforces, so a mode file committed to a repository cannot switch its commit checks off.
+The mode is enforced by the hooks, not left to the model: it lives in `.omit/mode` (or `OMIT_MODE`), set by the user with `/omit <mode>` in Claude Code or `omit mode <mode>` in a shell. The agent cannot set it: the tamper sentinel blocks that. Safety gates (destructive commands, secret leaks and literals, TLS bypass, hook tampering) block in every mode; only `OMIT_OFF=1` in the harness's environment silences them. `omit gate` (the pre-commit hook and CI) splits the same way:
+
+- **Safety, every repo, every mode (`off` and `OMIT_OFF=1` included):** secrets and TLS-verification bypass. Placeholders AWS publishes in its own docs (the `…EXAMPLE` access key ID and its example secret key) are not leaks; any other key still is.
+- **Editorial, only where the repo adopted omit:** injection patterns, new dependencies without a verified receipt, refuted receipts, and the repo's own linter, which runs on the staged content (an index snapshot), so `git add -p` leftovers on disk do not matter. A repo has adopted omit when `.omit/` is tracked (in HEAD or the index) or `git config omit.enforce true`; `git config omit.enforce false` opts out even then. Elsewhere the gate skips these with one line saying how to opt in. In `margin` they are reported without failing; in `off` (or `OMIT_OFF=1`) they are skipped.
+- **Injection exemptions:** docs (`*.md`, `*.mdx`, `*.rst`, `*.txt`, `docs/`), vendored and minified code (`vendor/`, `third_party/`, `*.min.js`, `*.min.css`) and lockfiles. Secrets and TLS bypass are still read there.
+
+Because editorial checks honour the mode, a committed `.omit/mode` can quiet a repo's own editorial commit checks; it cannot touch the safety ones.
 
 ## Install
 
@@ -237,9 +248,10 @@ omit hook install claude --context
 A hook install from a local checkout writes that checkout's absolute paths, which mean nothing on a teammate's machine. To share hooks through a committed `.claude/settings.json`, install with `npx @sriinnu/omit hook install …`, which writes version-pinned `npx` commands instead, or have everyone use the plugin.
 
 The doctor inspects global Codex hooks plus the current directory's
-`.codex/hooks.json` and `.claude/settings.json`. It reports missing scripts,
-duplicate registrations, malformed matchers, some legacy shell-tool name
-mismatches, and Git `core.hooksPath` overrides. It checks simple Node/Python
+`.codex/hooks.json`, `.claude/settings.json` and `.claude/settings.local.json`.
+It reports missing scripts, duplicate registrations, malformed matchers, some
+legacy shell-tool name mismatches, Git `core.hooksPath` overrides, and an
+`OMIT_OFF` set to anything but the literal `1` (which silently does nothing). It checks simple Node/Python
 script commands statically; other command shapes are explicitly unchecked.
 It does not resolve all parent layers, host trust, executable availability, or
 prove that hooks fired. `liveDelivery` remains `unverified`.
