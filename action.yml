@@ -77,19 +77,7 @@ runs:
         # would make this step PATCH a stranger's comment. The first match is taken
         # in bash: `head` would close the pipe early and SIGPIPE gh under pipefail.
         IDS=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$MARKER\"))) | .id")
-        COMMENT_ID=${IDS%%
-        if [ -n "$COMMENT_ID" ]; then
-          gh api --method PATCH "repos/$REPO/issues/comments/$COMMENT_ID" -F body=@"$RUNNER_TEMP/omit-comment.md"
-        else
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/omit-comment.md"
-        fi
-    - name: Enforce fail-on
-      if: steps.audit.outcome == 'failure'
-      shell: bash
-      run: |
-        echo "omit: the audit could not complete, or the verdict carries hazards with fail-on set — see the PR comment."
-        exit 1
-\n'*}
+        COMMENT_ID=${IDS%%$'\n'*}
         if [ -n "$COMMENT_ID" ]; then
           gh api --method PATCH "repos/$REPO/issues/comments/$COMMENT_ID" -F body=@"$RUNNER_TEMP/omit-comment.md"
         else
