@@ -8,10 +8,10 @@ omit works two ways, and the best setups use both:
 ## The one-time setup
 
 ```
-npm install -g github:sriinnu/omit
+npm install -g @sriinnu/omit      # Node 20 or newer; or: brew install sriinnu/tap/omit
 ```
 
-That gives you a global `omit` command everywhere: `omit init cursor`, `omit audit`, `omit gate`. Prefer not to install? One-off runs work too: `npx github:sriinnu/omit init cursor`. Every `npx @sriinnu/omit ...` below can be written as plain `omit ...` once globally installed.
+That gives you a global `omit` command everywhere: `omit init cursor`, `omit audit`, `omit gate`. Install it globally for the pre-commit gate: `npx` costs about 3 seconds per commit and hangs offline. Every `npx @sriinnu/omit ...` below can be written as plain `omit ...` once globally installed.
 
 ## Claude Code (full experience: discipline + live hooks)
 
@@ -48,7 +48,7 @@ For live hooks (not just the discipline), Codex CLI has its own hooks system wit
 npx @sriinnu/omit hook install codex
 ```
 
-Writes `.codex/hooks.json` pointing at this install's hook scripts. The command sentinel and leak sentinel are verified against Codex's documented schema — Codex's own docs show `PreToolUse` firing with `tool_input.command` for Bash, same as Claude Code, and both hook scripts were tested directly against that exact payload shape — though not yet against a live Codex session actually firing them end-to-end. The dep/hazard/lint sentinels and the Final Draft gate are wired to `apply_patch|Edit|Write` too, but Codex's `apply_patch` tool input shape for those hasn't been verified here; they no-op safely if the field they expect isn't present, so worst case is reduced coverage, not a false pass. Codex requires trusting new hook definitions once per session — run `/hooks` in a Codex session to review them.
+Writes `.codex/hooks.json` pointing at this install's hook scripts. The command, leak and tamper sentinels run before each `Bash` command, and the tamper sentinel checks file edits too. The dependency, hazard and lint sentinels are PostToolUse hooks for `apply_patch|Edit|Write` (and the first two for `Bash`), so they object after the write, not before it. The Final Draft gate runs on Stop. Payload tests cover these hooks; live firing inside a Codex session is not yet verified end to end. Codex requires trusting new hook definitions once per session — run `/hooks` in a Codex session to review them.
 
 ## Takumi
 
@@ -106,7 +106,7 @@ Rule files are advisory outside Claude Code. These two are not:
 npx @sriinnu/omit hook install
 ```
 
-Adds the omit gate to `.git/hooks/pre-commit`: commits containing secrets, injection-prone lines, uncited new dependencies, or lint failures are refused, whether Claude, Cursor, Copilot, or a human wrote them.
+Adds the omit gate to `.git/hooks/pre-commit`: commits containing secrets or TLS-verification bypass are refused in every repo, and in a repo that adopted omit (`.omit/` tracked, or `git config omit.enforce true`) so are injection-prone lines, uncited new dependencies and lint failures, whether Claude, Cursor, Copilot, or a human wrote them. The gate runs the repo's receipts and linter; set `OMIT_NO_EXEC=1` in a repo you haven't read.
 
 ```yaml
 # .github/workflows/omit.yml

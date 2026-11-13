@@ -9,124 +9,167 @@
 
 **Omit needless code.**
 
-An editorial discipline for AI coding agents. Named after Strunk & White's Rule 17: *"Omit needless words"*: applied to the way agents write software: they overwrite (bloat) and they overclaim (hallucinated shortcuts). `omit` fixes both.
+omit is an editorial discipline for AI coding agents, named for Strunk & White's Rule 17, *"Omit needless words"*. Agents write too much and claim too much, so omit asks them to write less and cite every shortcut, then enforces it with hooks, a pre-commit gate and a CI check that run outside the model.
 
 > Draft less. Cite everything. Cut last.
 
-## The problem
+Agents add abstractions nobody asked for, pull in dependencies for three lines of logic, and, told to keep it simple, confidently reach for stdlib APIs that don't exist. Minimalism-only rulesets fix the bloat and make the overclaiming worse, because pressure to write less rewards inventing shortcuts.
 
-AI agents are prolific authors and terrible editors. Left alone they add abstractions nobody asked for, pull in dependencies for three lines of logic, and: when told to "keep it simple": confidently reach for stdlib APIs that don't exist. Minimalism-only rulesets fix the bloat and make the overclaiming *worse*: the pressure to write less rewards inventing shortcuts.
+A commit the gate refuses, in a repo that adopted omit (output copied from a real run):
 
-## The system
+```
+$ git commit -m "pad strings"
+omit verdict
+────────────
+net: +1 −1 lines across 1 file
+new deps: 1: left-pad (1 without receipts ⚠)
+hazards: 0 ✅
+footnotes: 0 recorded · load-bearing: 0 marked
+receipts: none recorded
+lint: no linter configured
 
-`omit` turns the agent from author into editor. Four parts:
-
-| Part | What it does |
-|---|---|
-| **The Seven Omissions** | Before writing anything, try seven ways to *not* write it: omit the feature, the new code, the custom, the script, the dependency, the ceremony: stopping at the first omission that holds. What survives editing, ships. |
-| **The Fact-Check** | No omission counts without a citation **the tool can re-check itself**: `file:line:symbol` for "the codebase has this", an executable snippet for "stdlib covers it", a declared dep + snippet for "the dep handles it". A citation only its author can read is a self-report, and a hallucinated shortcut is a fabricated citation. |
-| **The Final Draft** | Working code is a first draft. After tests go green, one ruthless edit of the agent's own diff: then a net report: files, ±lines, new deps (target: 0). Done means final draft, not green tests. |
-| **Load-Bearing Lines** | Editing cuts fat, not walls. Validation, error handling, security, accessibility, concurrency correctness, and explicit requests are never cut: and adding them is announced, never smuggled or skipped. |
-
-Deliberate omissions go on the record as footnotes in the code:
-
-```js
-// omitted: retries: single caller tolerates failure; add backoff if this goes multi-tenant
+⛔ omit gate: new dep(s) without a verified receipt: left-pad.
+   .omit/receipts.jsonl is not part of this commit — receipts are read from the index, so a ledger that is not being committed cites nothing.
+Add one line to .omit/receipts.jsonl naming the dep and the omission you tried (each entry is re-checked, and must NOT hold):
+  {"claim":"new-dep","rung":7,"dep":"left-pad","tried":[{"rung":2,"absent":"<symbol you searched for>"}]}
+Run `omit verify` to check it before committing.
 ```
 
-## Enforcement: asked for vs. made to
+Four terms recur below.
 
-Every other skill in this genre is words the agent can ignore under context pressure. omit ships mechanisms that run *outside* the model:
+- **Receipt:** one line in `.omit/receipts.jsonl` that records a claim ("the codebase already does this") with the evidence that settles it. omit re-checks it. See [Receipts](#receipts).
+- **Rung:** the number of an omission in the [Seven Omissions](#the-discipline), from 1 (omit the feature) to 7 (ship what survives).
+- **Load-bearing:** a line that editing must never cut, such as validation, error handling or security. See [the discipline](#the-discipline).
+- **Margin, redline:** enforcement modes. Margin reports objections; redline (the default) blocks on them. See [Modes](#modes).
 
-| Mechanism | What it does |
+## Install
+
+Needs Node 20 or newer.
+
+```sh
+npm install -g @sriinnu/omit       # published with provenance
+brew install sriinnu/tap/omit      # or Homebrew
+omit hook install                  # in each repo: the pre-commit gate, whatever agent writes the code
+```
+
+Install globally for the gate. `npx @sriinnu/omit` works for anything else, but it costs about 3 seconds per commit and hangs offline. `omit hook install` writes `omit gate` into `.git/hooks/pre-commit` when `omit` is on your PATH, and an `npx -y` call pinned to the installed version otherwise.
+
+Then give your agent the discipline and the live hooks:
+
+```
+/plugin marketplace add sriinnu/omit      # Claude Code: skill, /omit, /omit-edit and every hook
+/plugin install omit@omit
+npx skills add sriinnu/omit               # any SKILL.md-aware agent, via skills.sh
+omit init cursor                          # or another rule file: see "Other agents"
+```
+
+[GETTING-STARTED.md](GETTING-STARTED.md) has a copy-paste setup for each agent.
+
+## What you get
+
+| | Where | What |
+|---|---|---|
+| **Safety** | every repo, every mode | Destructive commands, secret leaks and hardcoded secrets, certificate-verification bypass, and tampering with omit's own hooks are blocked. The commit gate always blocks secrets and TLS bypass. |
+| **Editorial** | repos that [adopted omit](#adopting-omit-in-a-repo) | Injection patterns, new dependencies without a verified receipt, refuted receipts, the repo's own linter, and the Final Draft gate. |
+
+The editorial half is opt-in per repo because uncited-dependency and lint objections are an imposition on a codebase that never agreed to them. Secrets are not.
+
+## Adopting omit in a repo
+
+A repo has adopted omit when `.omit/` is tracked (in HEAD or the index, so the commit that adds it is already judged) or `git config omit.enforce true` is set. Elsewhere the gate skips the editorial checks and prints one line saying how to opt in.
+
+`git config omit.enforce false` opts out even in an adopted repo. That is the user's call: the command sentinel blocks an agent from running it, and from running `git config omit.trusted …`. omit itself does not read `omit.trusted`; the block is there for setups that use it to decide which repos may run code at commit time.
+
+### Modes
+
+| Mode | Behavior |
 |---|---|
-| **Command sentinel** (hook) | Inspects every shell command BEFORE it runs and blocks the classic agent disasters: `rm -rf ~`, recursive deletes of system/drive roots, deletes through unset variables (`rm -rf $OUT/*` with `$OUT` empty), `dd` to block devices, `mkfs`, fork bombs, `xargs rm -rf`, a bare `find . -delete`. Git commands that destroy work for good are held for the user to run: `git clean -f`, `git reset --hard`, `git checkout -- .`, force-push without a lease, and `--no-verify` or a rerouted `core.hooksPath`, which would skip the pre-commit gate. The user's machine is load-bearing. Waiving one takes a trailing comment carrying a real reason — `# omit-allow: <reason>`. The bare token, a token inside a string literal, and a reason-less marker are ignored. |
-| **Dep sentinel** (hook) | A new dependency in a manifest with no *verified* receipt in `.omit/receipts.jsonl` → the edit is objected to before it lands (after, for a manifest rewritten from the shell). The receipt has to name the omissions that were tried, and each one is re-checked: if an omission actually applies, the receipt is refuted and the dependency is refused. |
-| **Hazard sentinel** (hook) | Hardcoded API keys/secrets and injection-prone patterns (string-built SQL, `eval`, shell concatenation, `innerHTML`, unsafe deserialization) are blocked before the edit lands, judged on the lines the edit adds. **Secrets have no override** — the secret rules run before any marker is consulted, so no `omit-allow:` waives one. Injection lines take a trailing comment with a real reason, and only that form. |
-| **Leak sentinel** (hook) | Blocks shell commands that print an *existing* secret's raw value to stdout before they run, or a live key typed straight into the command line: macOS Keychain, Linux `secret-tool`/`pass`/`gpg -d`, 1Password/Vault/AWS/GCP/Azure/kubectl secret CLIs, bare `env`/`printenv`, `env \| grep`-ing a KEY/TOKEN/SECRET/connection-string var, or `cat`-ing a `.env`/`credentials`/`*.pem`/`id_rsa` file, or opening one with the Read tool, or Grep printing its lines. Redirecting to a real file or piping into a non-printing sink (clipboard, `--password-stdin`) is recognized as safe — the goal is keeping secrets out of the transcript, not off disk. Adversarially reviewed (3 lenses, every finding re-verified by execution, not inspection) before shipping — one known gap stays undetected on purpose rather than chasing a fragile fix: a `for`/`do`/`done > file` loop's trailing redirect isn't attributed back to the loop body. The agent's own transcript is not a safe place for a real key. |
-| **TLS gate** (hook) | Certificate errors behind a corporate proxy tempt an agent to switch verification off. `NODE_TLS_REJECT_UNAUTHORIZED=0`, `curl -k`, `wget --no-check-certificate`, `strict-ssl false`, `http.sslVerify false`, `pip --trusted-host`, `verify=False`, `rejectUnauthorized: false` and their kin are blocked in commands and in code, with the fix that works instead: trust the proxy's CA (`NODE_EXTRA_CA_CERTS`, `npm config set cafile`, `REQUESTS_CA_BUNDLE`, `git config http.sslCAInfo`, `curl --cacert`). A reviewed line takes `# omit-allow: <reason>`. | <!-- # omit-allow: this row names the bypasses the gate blocks -->
-| **Tamper sentinel** (hook) | The agent under check may not disarm the check: an edit or shell command that removes omit's hooks from `.claude/settings*.json`, `.codex/hooks.json`, `.ribhu/hooks.json` or `.git/hooks/`, or that writes `.omit/mode`, `.git/config` or the session baseline in `.git/omit/`, is blocked. Other edits to the hooks files pass. |
-| **Lint sentinel** (hook) | omit ships no lint rules. It detects the linter the repo already configured (eslint, biome, ruff, flake8) and runs it on every edited file, so the agent hears objections immediately instead of at CI time. A linter that is configured but cannot be run — no `node_modules`, nothing on PATH — is reported as *not run* with the reason, never as a pass; "no linter configured" is now reserved for a repo that genuinely has none. |
-| **Final Draft gate** (hook) | The session cannot end with an edited tree and no current `.omit/final-draft.md` net report — and the report is read, not just stat'd. Its files/lines/deps counts are cross-checked against the actual diff, so a stub or a stale draft does not pass. The counts start from a snapshot taken when the session began, so changes already in the tree are not charged to it (`omit audit --session` prints the same numbers). A subagent that edited files meets the same gate when it stops. The deletion pass is a gate, not a suggestion. |
-| **Receipts ledger** | Every Fact-Check citation is appended to `.omit/receipts.jsonl` as a claim *plus the evidence that settles it*, and `omit verify` re-checks the lot. Run it on a PR: "17/17 claims survived" is a number a reviewer can act on, and "3 refuted" names exactly which shortcuts were invented. |
+| `margin` | Build as asked. Final Draft, receipt, lint and injection objections are reported, not enforced. |
+| `redline` | **Default.** Full enforcement: Seven Omissions, Fact-Check, Final Draft. |
+| `rewrite` | Redline, and question the assignment itself before building. |
+| `off` | Editorial gates are quiet. |
 
-Hooks install automatically with the Claude Code plugin. For Codex, run `npx @sriinnu/omit hook install codex` to merge hooks into `.codex/hooks.json`; rerunning preserves existing hooks without duplicating omit's entries. Command, leak and tamper sentinels check `Bash` before execution, and the tamper sentinel checks file edits too. A SessionStart hook records the session baseline the Final Draft gate counts from. Installed from an `npx` cache, the hooks call back through npx, pinned to the installed version (`omit hook run <hook>`), so they survive the cache being cleaned. Dependency and hazard sentinels also check shell edits afterward. File sentinels read `apply_patch` from `tool_input.command`, checking all added/updated paths and move destinations while skipping deleted files. Malformed patch envelopes produce an objection. Payload regression tests cover these contracts; live Codex delivery and Stop-gate behavior still require end-to-end verification. These hooks do not impose a token budget or compact transcripts. Escape hatch for humans: `OMIT_OFF=1`.
+Set the mode with `/omit <mode>` in Claude Code or `omit mode <mode>` in a shell. It lives in `.omit/mode` (or `OMIT_MODE`). The hooks enforce it, not the model, and the tamper sentinel stops an agent from writing it. A committed `.omit/mode` can quiet a repo's own editorial commit checks. It cannot touch the safety ones.
 
-[Ribhu](https://github.com/sriinnu/ribhu) has shell hooks too, with its own file shape and payload: `npx @sriinnu/omit hook install ribhu` writes `.ribhu/hooks.json`, and a small adapter translates Ribhu's payload so the same sentinels run unchanged: command, leak and tamper before `bash`, leak before `read`, tamper before file edits, dependency, hazard and lint after them, and the Final Draft gate on Stop. A hook that cannot run its sentinel blocks rather than passes. Ribhu sends every tool call a code-mode script makes through those hooks, so a script's writes are checked like direct ones. The hooks are tested by firing each installed command the way Ribhu does, with payloads in its shape; they have not yet been watched firing inside a live Ribhu session.
+`OMIT_OFF=1` and `off` do different things:
 
-## What this does not catch
+- **`OMIT_OFF=1` in the harness's environment** silences every hook, safety sentinels included. Only the literal `1` counts.
+- **`omit gate`** (the pre-commit hook and CI) treats `OMIT_OFF=1` as mode `off`: it skips the editorial checks and still blocks secrets and TLS bypass.
 
-A table of mechanisms invites you to read it as a guarantee. It isn't one, so here is the rest of it. Every item below is a known, reproduced limit, not a hypothetical.
+Placeholders AWS publishes in its own docs (the `…EXAMPLE` access key ID and its example secret key) are not leaks. Any other key is.
 
-- **Writes whose path cannot be read out of the command reach no file sentinel.** `python -c "open('f','w').write(...)"`, `curl -o f`, `node -e fs.writeFileSync`. A literal secret in such a command is still caught by the command-text scan; its *injection* patterns are not. The same goes for a file rewritten through a tool no sentinel is wired to.
-- **`omit gate` is a git hook.** `git commit --no-verify` skips it (the command sentinel stops an agent from running that, not a person), and `core.hooksPath` shadows it entirely — `omit audit` and `omit gate` both report that in the verdict, and `omit hook install` writes to whichever directory git actually runs hooks from, but nothing can stop you bypassing your own pre-commit hook.
-- **The dependency allowlist is short.** `setup.py`, `build.gradle`, `Package.swift` and `*.csproj` are dependency-shaped and unparsed. They are now *reported* (`unparsed deps: …`) rather than counted as zero, and a changed one suppresses the `✅` on the deps row — but the gate does not fail on them, because a `setup.py` in a repo is not evidence of anything.
-- **The lint sentinel runs your linter in your session**, which executes your lint config — the same trust as running `npm run lint` yourself. In the GitHub Action it is gated: with the default `exec: false`, CI does not run the linter at all, and the verdict says *not run* rather than claiming a pass.
-- **Receipt evidence is bound to its claim textually.** A `run` snippet must name what it exercises and the argv must mention it, which closes snippets that exit on demand (`["true"]`, `["false"]`). It does not catch a snippet that names a symbol without calling it. Proving that would mean the verifier writing the snippet, and then it is testing the verifier.
-- **`omit`'s own directory is exempt** from the hazard scan, because the ledger holds evidence strings by construction. Its execution risk is what `OMIT_HOOK_EXEC` gates.
-- **The Action does not run a PR's receipts** unless you set `with: { exec: true }`. A PR's `run` snippets are untrusted code, so the default is not to execute them.
+Injection patterns are not checked in docs (`*.md`, `*.mdx`, `*.rst`, `*.txt`, `docs/`), vendored and minified code (`vendor/`, `third_party/`, `*.min.js`, `*.min.css`) or lockfiles. Secrets and TLS bypass are still read there. `omit`'s own `.omit/` directory is exempt from the hazard scan, because the ledger holds evidence strings by construction.
 
-`// omitted: a mechanism for the first item above` would be a shell parser, and a wrong shell parser is worse than none. It is left out on purpose.
+## The discipline
 
-## Receipts: the claim and the evidence, in one line
+omit turns the agent from author into editor. The rule file and skill teach it; the sentinels below enforce it.
 
-Minimalism is a taste, and taste has no receipt. The failure mode underneath it does: the agent says *"the codebase already does this"* or *"stdlib covers it"*, and nobody checks. Every rule file in this genre **tells** the agent not to lie. `omit` checks.
+1. **The Seven Omissions.** Before writing, try to *not* write it, in order, and stop at the first that holds: (1) omit the feature, (2) the new code, (3) the custom code, (4) the script, (5) the dependency, (6) the ceremony. (7) What survives editing ships: fewest files, shortest diff.
+2. **The Fact-Check.** No omission counts without a citation the tool can re-check itself: `file:line:symbol` for "the codebase has this", an executable snippet for "stdlib covers it", a declared dependency plus a snippet for "the dep handles it". A citation only its author can read is a self-report, and a hallucinated shortcut is a fabricated citation.
+3. **The Final Draft.** Working code is a first draft. After the tests pass, one ruthless edit of the agent's own diff, then a net report in `.omit/final-draft.md`: files touched, lines added and removed, new dependencies (target 0). `omit audit` prints exactly those numbers. Done means final draft, not green tests.
+4. **Load-Bearing Lines.** Editing cuts fat, not walls. Validation at trust boundaries, error handling that prevents data loss, security, accessibility, concurrency correctness and anything explicitly requested are never cut, and adding them is announced, not smuggled or skipped.
+5. **Footnotes.** Deliberate omissions go on the record in the code:
+
+```js
+// omitted: retries; single caller tolerates failure; add backoff if this goes multi-tenant
+```
+
+The full text is in [AGENTS.md](AGENTS.md).
+
+## Receipts
+
+Minimalism is a taste, and taste has no receipt. The failure underneath it does: the agent says "the codebase already does this" or "stdlib covers it", and nobody checks. Every rule file in this genre tells the agent not to lie. omit checks.
 
 Each claim lands in `.omit/receipts.jsonl` with the evidence that settles it:
 
 ```json
-{"claim":"reuse","rung":2,"file":"src/util.ts","line":42,"symbol":"parseRange"}
+{"claim":"reuse","rung":2,"file":"src/util.ts","line":1,"symbol":"padTo"}
 {"claim":"stdlib","rung":3,"api":"crypto.randomUUID","run":["node","-e","crypto.randomUUID()"]}
-{"claim":"installed-dep","rung":5,"dep":"zod","run":["node","-e","require('zod').object"]}
 {"claim":"new-dep","rung":7,"dep":"left-pad","tried":[{"rung":2,"absent":"padTo"}]}
 ```
 
 ```
-$ npx @sriinnu/omit verify
+$ omit verify
 ✅ line   1  verified      reuse
-⛔ line   2  failed        new-dep
+✅ line   2  verified      stdlib
+⛔ line   3  failed        new-dep
         [new-dep] tried[0] (rung 2) actually HOLDS: padTo is present at src/util.ts — so the omission applies and this dep is not needed
 
-1/2 claims survived re-checking · 1 refuted · 0 unverifiable
+2/3 claims survived re-checking · 1 refuted · 0 unverifiable
 ```
 
-That second one is the whole idea. A `new-dep` receipt exists to say *"I tried the earlier omissions and none of them held"* — so it cites the symbol it looked for, `omit` searches the tree for itself, and a symbol that **is** there refutes the agent's own conclusion. When the author supplies the question instead of the evidence, citing your way past an omission you never tried stops being possible.
+The third line is the whole idea. A `new-dep` receipt says "I tried the earlier omissions and none held", so it cites the symbol it looked for, omit searches the tree for itself, and a symbol that is there refutes the agent's own conclusion. Run `omit verify` on a PR: "17/17 claims survived" is a number a reviewer can act on, and "3 refuted" names the shortcuts that were invented.
 
-Two bindings make that hold, and neither is decorative:
+Two bindings keep this honest:
 
-- **`run` must name what it exercises** (`api`, or the dependency), and the argv must mention it. Exit status alone proves nothing: `["true"]` exits 0 and `["false"]` exits 1 while testing neither the standard library nor anything else. A snippet that exits on demand is not evidence.
-- **A `tried` entry cites a search, not a location.** Naming a file that merely doesn't exist proves nothing — and it used to be the cheapest possible way to fake "I tried reuse", because the check only asked whether it failed.
+- **`run` must name what it exercises** (`api`, or the dependency), and the argv must mention it. Exit status alone proves nothing: `["true"]` exits 0 and `["false"]` exits 1 while testing nothing.
+- **A `tried` entry cites a search, not a location.** A file that merely doesn't exist proves nothing.
 
-`run` is an argv array, never a shell string: nothing expands, nothing hides in an argument. `.omit/receipts.jsonl` is executable in the same sense a Makefile is — read it in a PR the way you'd read one. `OMIT_NO_EXEC=1` downgrades those checks to "unverifiable" instead of executing them, and the dependency hook does not execute them at all unless you set `OMIT_HOOK_EXEC=1`: a *Write* of the ledger would otherwise run code as you, with no approval prompt.
+A receipt in the old prose shape, or a `tried` entry that cites a file, reads as `unverifiable`, and `omit verify` names each one.
 
-**Upgrading from 0.3.x:** the shapes above are the 0.4.0 schema. A receipt written before it — a prose `receipt` string, or a `tried` entry citing a file — reads as `unverifiable`, which `omit verify` names individually. They are not silently accepted, and they are not silently dropped.
+`run` is an argv array, never a shell string: nothing expands, nothing hides in an argument. `.omit/receipts.jsonl` is executable the way a Makefile is, so read it in a PR the same way. `OMIT_NO_EXEC=1` downgrades those checks to "unverifiable" instead of running them. The dependency hook never runs them unless `OMIT_HOOK_EXEC=1`, because a Write of the ledger would otherwise run code as you with no approval prompt.
 
-## Any provider, same gates
+## Mechanisms
 
-The enforcement logic lives in a zero-dependency CLI, not in any one vendor's hook system: Claude Code's and Codex's hooks are both just thin adapters over it. For Cursor, Copilot, or anything else, enforce at the two chokepoints every agent passes through:
+- **Command sentinel.** Before a shell command runs, blocks `rm -rf` of home or a system root, deletes through an unset variable, `dd` to a block device, `mkfs`, fork bombs, `xargs rm -rf` and a bare `find . -delete`.
+  - Holds for the user to run: `git clean -f`, `git reset --hard`, `git checkout -- .`, force-push without a lease, `--no-verify`, a rerouted `core.hooksPath`, and `git config omit.trusted …` or `omit.enforce false`.
+  - Waive one with a trailing comment that carries a real reason: `# omit-allow: <reason>`. The bare token, a token in a string literal and a reason-less marker are ignored.
+- **Dep sentinel.** A new dependency in a manifest with no verified receipt is objected to. Each omission the receipt says was tried is re-checked; if one applies, the dependency is refused.
+- **Hazard sentinel.** Blocks hardcoded keys and injection-prone patterns (string-built SQL, `eval`, shell concatenation, `innerHTML`, unsafe deserialization), judged on the lines an edit adds.
+  - Secrets have no override: the secret rules run before any marker is read. Injection lines take a trailing `# omit-allow: <reason>`.
+- **Leak sentinel.** Blocks a shell command that would print an existing secret to stdout: Keychain, `secret-tool`, `pass`, `gpg -d`, 1Password, Vault, AWS, GCP, Azure and kubectl secret CLIs, bare `env` or `printenv`, `env | grep` for a KEY, TOKEN or SECRET variable, and `cat` of a `.env`, `credentials`, `*.pem` or `id_rsa` file. Also blocks a live key typed into the command line.
+  - The same goes for the Read tool opening such a file and Grep printing its lines. Redirecting to a file or piping to a non-printing sink (clipboard, `--password-stdin`) is safe: the goal is to keep secrets out of the transcript, not off disk.
+- **TLS rules.** A rule set inside the command and hazard sentinels, not a hook of its own. Switching certificate verification off (environment flags, `curl` and `wget` options, npm, git and pip settings, a verify flag set false in code) is blocked, with the fix that works: trust the proxy's CA (`NODE_EXTRA_CA_CERTS`, `npm config set cafile`, `REQUESTS_CA_BUNDLE`, `git config http.sslCAInfo`, `curl --cacert`). A reviewed line takes `# omit-allow: <reason>`.
+- **Tamper sentinel.** The agent under check may not disarm the check. Blocks an edit or command that removes omit's hooks from `.claude/settings*.json`, `.codex/hooks.json`, `.ribhu/hooks.json` or `.git/hooks/`, or writes `.omit/mode`, `.git/config` or the session baseline in `.git/omit/`. Other edits to the hooks files pass.
+- **Lint sentinel.** Ships no lint rules. Detects the linter the repo configured (eslint, biome, ruff, flake8) and runs it on each edited file. A configured linter that cannot run (no `node_modules`, nothing on PATH) is reported as *not run* with the reason, never as a pass.
+- **Final Draft gate.** The session cannot end with an edited tree and no current `.omit/final-draft.md`. The report is read, not just stat'd: its counts are checked against the actual diff, so a stub or stale draft fails. Counts start from a snapshot the SessionStart hook takes, so changes already in the tree are not charged to the session. A subagent that edited files meets the same gate.
+- **Receipts ledger.** Every Fact-Check citation, re-checked by `omit verify`. Not a hook.
 
-```
-npx @sriinnu/omit hook install   # git pre-commit: audits the staged diff,
-                                 # fails on secrets and TLS bypass; where omit was
-                                 # adopted, also injections, uncited deps, lint
-npx @sriinnu/omit audit          # net diff (untracked files included), new deps, hazards
-npx @sriinnu/omit audit --session  # the same, counted from when the agent session began
-npx @sriinnu/omit audit --fail-on hazard  # the same, but exit 1 on hazards (secret | none too)
-npx @sriinnu/omit check <files>  # hazard-scan specific files (wire into any hook system)
-npx @sriinnu/omit lint [files]   # run the repo's OWN linter on changed files
-npx @sriinnu/omit verify         # re-check every claim in .omit/receipts.jsonl
-npx @sriinnu/omit guard "<cmd>"  # is this shell command a disaster? (wire into any hook system)
-npx @sriinnu/omit leak "<cmd>"   # would this command print a real secret to stdout?
-npx @sriinnu/omit gate           # the pre-commit check: secrets/TLS everywhere, the rest where omit was adopted
-npx @sriinnu/omit gate --range origin/main..HEAD --json  # CI: every commit in a PR, judged by the BASE's adoption and mode; byte-identical JSON verdict
-npx @sriinnu/omit hook install codex  # write .codex/hooks.json — live sentinels inside Codex CLI
-npx @sriinnu/omit hook install ribhu  # write .ribhu/hooks.json — live sentinels inside Ribhu
-npx @sriinnu/omit hook run <hook>     # run one hook on a payload from stdin (what installs from an npx cache call)
-npx @sriinnu/omit mode [<mode>]       # print or set the enforcement mode
-npx @sriinnu/omit init --check        # report installed rule files that drifted from this version; writes nothing
-```
+Where each runs depends on the host. Under the Claude plugin, the dependency and hazard sentinels object before an edit lands (after, for a manifest rewritten from the shell). Under `omit hook install codex` they are PostToolUse hooks for file edits, so they object after the write, as does the lint sentinel in both. These hooks do not impose a token budget or compact transcripts. Escape hatch for humans: `OMIT_OFF=1`.
 
-And server-side, the GitHub Action comments the verdict on every PR regardless of what wrote the code:
+## CI
+
+The GitHub Action comments the verdict on every pull request, whatever wrote the code:
 
 ```yaml
 # .github/workflows/omit.yml
@@ -141,35 +184,99 @@ jobs:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - uses: sriinnu/omit@v0.8.0
-        # with: { exec: true }   # execute receipts' `run` snippets to verify them
-                                 # fully. Off by default: a PR's receipts are
-                                 # untrusted code, and this runs on pull requests.
-        # with: { gate: true }   # also run `omit gate --range` over the PR's commits and
-                                 # fail on a block, from this action's own code with
-                                 # execution off. Needs fetch-depth 0 and `pull_request`.
-        # with: { fail-on: secret }  # fail the check on hardcoded secrets
-                                     # (hazard = any hazard; default none = comment only)
+        with: { gate: true, fail-on: secret }
 ```
 
-```
-### omit verdict
-- net: +61 −204 lines across 4 files
-- new deps: 0 ✅
-- hazards: 0 ✅
-- footnotes: 3 recorded · load-bearing: 1 marked
-- receipts: 17/17 verified
-- lint: eslint ✅
-```
+The comment carries the same rows as the verdict in the first example, as markdown, and is edited in place on each push.
+
+| Input | Default | Meaning |
+|---|---|---|
+| `base` | `origin/<PR base>` | Ref to diff against. |
+| `exec` | `false` | Run the `run` snippets in `.omit/receipts.jsonl` and the repo's linter. Off because a PR's receipts and lint config are untrusted code; the verdict then says *not run*. |
+| `fail-on` | `none` | `secret` fails the check on hardcoded secrets, `hazard` on any hazard. `none` comments only. |
+| `gate` | `false` | Also run `omit gate --range` over the PR's commits and fail on a block. Runs from the Action's own checkout with execution off, and needs `fetch-depth: 0` and a `pull_request` event (`pull_request_target` would hand a fork's PR a write token). |
+
+### The gate range
+
+A pre-commit hook runs as the agent it checks, so CI recomputes the verdict. `omit gate --range <base>..<head>` (or `--base <ref>`, meaning `<ref>..HEAD`) checks each commit against its first parent, so a secret added in one commit and removed in the next still fails.
+
+- **Adoption and mode come from the base revision's tree only**, not the head, `OMIT_MODE` or git config. A PR that sets `.omit/mode` to `off` or deletes `.omit/` is still gated by the base's rules.
+- **A merge commit** is judged on the lines new relative to all its parents, so a clean merge adds nothing.
+- **`--json` prints a versioned verdict**: `omitVersion`, `rulesHash` (sha256 of the rule files), `base`, `head`, `adopted`, `mode`, `exec`, `ok` and `findings`, with sorted keys and no timestamps or paths, byte-identical for the same inputs. `exec: false` marks a run with `OMIT_NO_EXEC` set, where receipts and the linter did not run.
+- **`omit audit --fail-on gate`** makes the same decision on the working tree.
+- The head must be the checked-out commit, because receipts and lint read the working tree.
+
+This repo's own [workflow](.github/workflows/omit.yml) runs the range as a separate job named `omit-gate`. It takes omit from the base branch's checkout, never the PR's, with `OMIT_NO_EXEC=1`. **Add `omit-gate` to the branch's required checks.** A PR can edit the workflow file, but a required check that never reports still blocks the merge.
+
+## What this does not catch
+
+A table of mechanisms invites you to read it as a guarantee. It isn't one. Each item is a known, reproduced limit.
+
+- **The gate runs a repo's own code by default.** `omit gate` runs an adopted repo's receipts (`run` snippets) and its linter. In a repo you cloned, that is someone else's code running as you on your first commit. Set `OMIT_NO_EXEC=1` for repos you haven't read. Range mode in CI already runs with execution off.
+- **Writes whose path can't be read out of the command reach no file sentinel.** `python -c "open('f','w').write(...)"`, `curl -o f`, `node -e fs.writeFileSync`. A literal secret in such a command is still caught by the command-text scan; its injection patterns are not. The same goes for a file rewritten through a tool no sentinel is wired to. A shell parser would close this, and a wrong shell parser is worse than none, so omit leaves it out.
+- **`omit gate` is a git hook.** `git commit --no-verify` skips it (the command sentinel stops an agent from running that, not a person), and `core.hooksPath` shadows it. `omit audit` and `omit gate` report the shadowing in the verdict. `omit hook install` always writes `.git/hooks/pre-commit` and warns when `core.hooksPath` means git won't run it. Nothing can stop you bypassing your own pre-commit hook.
+- **The dependency allowlist is short.** `setup.py`, `build.gradle`, `Package.swift` and `*.csproj` are dependency-shaped and unparsed. A change to one is reported (`unparsed deps: …`) and suppresses the `✅` on the deps row, but the gate does not fail on it, because a `setup.py` in a repo is not evidence of anything.
+- **The lint sentinel runs your linter in your session**, which executes your lint config: the same trust as running `npm run lint` yourself. The Action does not run it unless `exec: true`.
+- **The Action does not run a PR's receipts** unless you set `exec: true`. They are untrusted code.
+- **Receipt evidence is bound to its claim textually.** A snippet that names a symbol without calling it passes. Proving otherwise would mean the verifier writing the snippet, and then it tests the verifier.
+- **The leak sentinel misses one shape.** A `for`/`do`/`done > file` loop's trailing redirect isn't attributed back to the loop body. It stays undetected on purpose rather than chasing a fragile fix.
+- **omit's own directory is exempt** from the hazard scan. Its execution risk is what `OMIT_HOOK_EXEC` gates.
+
+## Other agents
+
+The enforcement logic lives in a zero-dependency CLI, not in any one vendor's hook system. Claude Code's and Codex's hooks are thin adapters over it, and the git hook and the Action cover every other agent.
+
+- **Codex:** `omit init codex` writes `AGENTS.md`; `omit hook install codex` merges the sentinels into `.codex/hooks.json` without duplicating omit's entries on a rerun. Command, leak and tamper sentinels run on `Bash` before execution and the tamper sentinel checks file edits too; dependency, hazard and lint run after the write. Codex asks you to trust new hooks once per session (`/hooks`).
+- **Codex, file edits:** the file sentinels read `apply_patch` from `tool_input.command`, check every added or updated path and move destination, skip deleted files, and object to a malformed patch envelope. Payload tests cover these contracts; live Codex delivery and the Stop gate are not yet verified end to end.
+- **npx installs:** installed from an `npx` cache, the hooks call back through npx pinned to the installed version (`omit hook run <hook>`), so they survive the cache being cleaned.
+- **[Ribhu](https://github.com/sriinnu/ribhu):** `omit hook install ribhu` writes `.ribhu/hooks.json`; an adapter translates Ribhu's payload so the same sentinels run unchanged, and a hook that cannot run its sentinel blocks rather than passes. Ribhu sends every tool call a code-mode script makes through the hooks, so a script's writes are checked like direct ones. Ribhu runs a repository's hooks only once the project is trusted. Tested with payloads in its shape; not yet watched firing in a live Ribhu session.
+- **Cursor, Cline, Windsurf, Copilot:** `omit init cursor | cline | windsurf | copilot` writes `.cursor/rules/omit.mdc`, `.clinerules/omit.md`, `.windsurf/rules/omit.md` or `.github/copilot-instructions.md`. Or copy that file from this repo.
+- **Takumi, Gemini CLI, anything else:** `omit init agents` writes `AGENTS.md`. If the agent doesn't read it, paste its contents into the agent's custom-instructions or rules setting (`GEMINI.md` for Gemini CLI). It is plain markdown.
+- **Claude Code without the plugin:** `omit init claude` writes `.claude/skills/omit/SKILL.md`, or copy `skills/omit/SKILL.md` to that path (project) or `~/.claude/skills/omit/SKILL.md` (all projects). `omit hook install claude` writes the plugin's hooks into `.claude/settings.json`.
+
+A hook install from a local checkout writes that checkout's absolute paths, which mean nothing on a teammate's machine. To share hooks through a committed `.claude/settings.json`, install with `npx @sriinnu/omit hook install …`, which writes version-pinned `npx` commands, or have everyone use the plugin.
+
+## Commands
+
+**Set up.** `init all` writes `AGENTS.md`, `.agents/skills/omit/SKILL.md`, `.claude/skills/omit/SKILL.md`, `.cursor/rules/omit.mdc`, `.clinerules/omit.md`, `.windsurf/rules/omit.md` and `.github/copilot-instructions.md`.
 
 ```
-// omitted: a composite "omit score": any weight vector over these counts is
-// invented, and footnotes could raise it by adding lines. The counts above are
-// the receipts; a single number would just be another uncited claim.
+omit init [agents|claude|cursor|cline|windsurf|copilot|skill|codex|takumi|all]   # never overwrites
+omit init --check                 # report installed rule files that drifted from this version; writes nothing
+omit hook install                 # git pre-commit gate
+omit hook install claude|codex|ribhu [--context]   # live sentinels inside that agent
+omit hook run <hook>              # run one hook on a payload from stdin
+omit mode [margin|redline|rewrite|off]             # print or set the enforcement mode
 ```
 
-## Codemode (experimental)
+**Check**
 
-An agent exploring a repo pays for every intermediate result: each read and each grep is a round-trip whose raw output lands in the transcript and is sent again on every later turn. With `omit codemode` the model writes a script, the reads happen inside it, and only what the script returns comes back.
+```
+omit audit                        # net diff (untracked files included), new deps, hazards, receipts, lint
+omit audit --base <ref>           # against a ref instead of HEAD
+omit audit --session              # counted from when the agent session began; needs the baseline
+                                  # the SessionStart hook writes (omit hook install claude)
+omit audit --json | --markdown    # other formats
+omit audit --fail-on secret|hazard|gate   # exit 1 on secrets, any hazard, or what the gate would block
+omit gate                         # the pre-commit check on the staged diff
+omit gate --range <base>..<head> [--json]  # every commit in the range, judged by the base's adoption and mode
+omit gate --base <ref>            # same as --range <ref>..HEAD
+omit check <files>                # hazard-scan specific files
+omit lint [files]                 # run the repo's own linter on changed files
+omit verify                       # re-check every claim in .omit/receipts.jsonl
+omit guard "<cmd>"                # is this shell command a disaster?
+omit leak "<cmd>"                 # would this command print a real secret to stdout?
+```
+
+`check`, `guard` and `leak` exist to wire omit into any other hook system.
+
+**Claude Code slash commands:** `/omit [margin|redline|rewrite|off]` switches or shows the mode; `/omit-edit` runs an editor's pass over the current diff for bloat, uncited claims, missing footnotes and cut opportunities.
+
+## Extras
+
+### Codemode (experimental)
+
+An agent exploring a repo pays for every intermediate result: each read and grep is a round-trip whose raw output lands in the transcript and is sent again on every later turn. With `omit codemode` the model writes a script, the reads happen inside it, and only what the script returns comes back.
 
 ```sh
 omit codemode run <<'EOF'
@@ -179,20 +286,18 @@ return Object.fromEntries(libs.map((f, i) => [f, (sources[i].match(/^export /gm)
 EOF
 ```
 
-- **Read-only.** Three tools: `files`, `read`, `grep`. They read the tree through git, so ignored files stay out, and every path is confined to the directory the server started in: no `..`, no absolute path, no symlink out.
-- **Sandboxed.** The script runs in a QuickJS VM compiled to wasm ([`@earendil-works/pi-codemode`](https://www.npmjs.com/package/@earendil-works/pi-codemode), the sandbox behind pi's codemode): no file system, no network, no `process`. `node:vm` is not isolation, and the receipt for this dependency runs the escape to show it.
+- **Read-only.** Three tools: `files`, `read`, `grep`. They read the tree through git, so ignored files stay out, and every path is confined to the starting directory: no `..`, no absolute path, no symlink out.
+- **Sandboxed.** The script runs in a QuickJS VM compiled to wasm ([`@earendil-works/pi-codemode`](https://www.npmjs.com/package/@earendil-works/pi-codemode)): no file system, no network, no `process`. `node:vm` is not isolation, and the receipt for this dependency runs the escape to show it.
 - **Secrets stay in.** A script may read a credentials file; it may not return it. Output that matches a secret rule is withheld whole.
-- **Bounded.** A script has 60 seconds, and output past 20,000 characters loses its middle.
+- **Bounded.** 60 seconds, and output past 20,000 characters loses its middle.
 
-The sandbox is an optional peer that only this command loads, so `omit` itself still installs zero dependencies. It needs Node 22.19 or newer.
+The sandbox is an optional peer that only this command loads, so omit itself still installs zero dependencies. It needs Node 22.19 or newer:
 
 ```
 npm install -g @sriinnu/omit @earendil-works/pi-codemode
 ```
 
-Any agent with a shell can use it as it stands: `omit codemode run` takes a script on stdin or from a file and prints the answer, and the `omit-codemode` skill (`skills/omit-codemode/SKILL.md`) teaches the agent when to reach for it and what a script can call. Nothing has to be registered.
-
-For a host without a shell, or one where you would rather approve a single read-only tool, the same thing is an MCP server on stdio:
+Any agent with a shell can use `omit codemode run` (script on stdin or from a file), and the `omit-codemode` skill (`skills/omit-codemode/SKILL.md`) teaches when to reach for it. For a host without a shell, or one where you'd rather approve a single read-only tool, the same thing is an MCP server on stdio. It has no write or edit tools on purpose: a nested write is not seen by the host's hooks.
 
 ```
 claude mcp add omit -- omit codemode        # Claude Code
@@ -205,195 +310,40 @@ command = "omit"
 args = ["codemode"]
 ```
 
-```
-// omitted: write and edit tools: a nested write is not seen by the host's
-// hooks, so it has to carry the hazard, dependency and lint gates itself. Add
-// them once bench/ shows the read side pays for the surface.
-```
-
-## The referee (experimental)
-
-`bench/` is METHODOLOGY.md made runnable: paired agentic runs of the same tasks under baseline, omit, or **any competing skill**, metrics computed from the actual git diffs, all transcripts kept. The category argues about self-reported numbers; omit ships the measuring instrument. See `bench/README.md`.
-
-## Modes
-
-| Mode | Behavior |
-|---|---|
-| `margin` | Build as asked. Final Draft, receipt, lint and injection objections are reported, not enforced |
-| `redline` | **Default.** Full enforcement: Seven Omissions, Fact-Check, Final Draft |
-| `rewrite` | Redline, and question the assignment itself before building |
-| `off` | Editorial gates are quiet |
-
-The mode is enforced by the hooks, not left to the model: it lives in `.omit/mode` (or `OMIT_MODE`), set by the user with `/omit <mode>` in Claude Code or `omit mode <mode>` in a shell. The agent cannot set it: the tamper sentinel blocks that. Safety gates (destructive commands, secret leaks and literals, TLS bypass, hook tampering) block in every mode; only `OMIT_OFF=1` in the harness's environment silences them. `omit gate` (the pre-commit hook and CI) splits the same way:
-
-- **Safety, every repo, every mode (`off` and `OMIT_OFF=1` included):** secrets and TLS-verification bypass. Placeholders AWS publishes in its own docs (the `…EXAMPLE` access key ID and its example secret key) are not leaks; any other key still is.
-- **Editorial, only where the repo adopted omit:** injection patterns, new dependencies without a verified receipt, refuted receipts, and the repo's own linter, which runs on the staged content (an index snapshot), so `git add -p` leftovers on disk do not matter. A repo has adopted omit when `.omit/` is tracked (in HEAD or the index) or `git config omit.enforce true`; `git config omit.enforce false` opts out even then. Elsewhere the gate skips these with one line saying how to opt in. In `margin` they are reported without failing; in `off` (or `OMIT_OFF=1`) they are skipped.
-- **A pre-commit hook runs as the agent it checks, so CI recomputes the verdict.** `omit gate --range <base>..<head>` (or `--base <ref>`) gates each commit against its first parent, so a secret added in one commit and removed in the next still fails. Adoption and mode come from the base revision's tree only (not the head, not `OMIT_MODE`, not git config), so a PR that sets `.omit/mode` to `off` or deletes `.omit/` is still gated by the base's rules. A merge commit is judged on the lines new relative to all its parents, so a clean merge adds nothing. `--json` prints a verdict with `omitVersion`, `rulesHash` (sha256 of the rule files), `base`, `head`, `adopted`, `mode`, `exec`, `ok` and `findings`: sorted keys, no timestamps or paths, byte-identical for the same inputs. `exec: false` marks a run with `OMIT_NO_EXEC` set, where receipt snippets and the linter were not run. `omit audit --fail-on gate` uses the same decision.
-- **Injection exemptions:** docs (`*.md`, `*.mdx`, `*.rst`, `*.txt`, `docs/`), vendored and minified code (`vendor/`, `third_party/`, `*.min.js`, `*.min.css`) and lockfiles. Secrets and TLS bypass are still read there.
-
-Because editorial checks honour the mode, a committed `.omit/mode` can quiet a repo's own editorial commit checks; it cannot touch the safety ones.
-
-## Install
-
 ### Hook health and context controls
 
-These features run locally with Node and do not call a model or provider API.
-Use the same CLI with any provider/model; hook installation targets the host,
-not the model. Codex and Claude adapters are included. Other hosts need the
-documented stdin/output contract below; automatic interception is not universal.
+These run locally with Node and call no model or provider API. Other hosts need the stdin contract below; automatic interception is not universal.
 
 ```sh
 omit doctor                # read-only hook inspection; never runs discovered commands
 omit doctor --json         # same findings for scripts; exit 1 on errors
-omit init skill            # discoverable .agents/skills/omit/SKILL.md; never overwrite
 omit hook install codex --context
 omit hook install claude --context
 ```
 
-A hook install from a local checkout writes that checkout's absolute paths, which mean nothing on a teammate's machine. To share hooks through a committed `.claude/settings.json`, install with `npx @sriinnu/omit hook install …`, which writes version-pinned `npx` commands instead, or have everyone use the plugin.
+`omit doctor` inspects global Codex hooks plus the current directory's `.codex/hooks.json`, `.claude/settings.json`, `.claude/settings.local.json` and `.ribhu/hooks.json`. It reports missing scripts, duplicate registrations, malformed matchers, some legacy shell-tool name mismatches, `core.hooksPath` overrides, and an `OMIT_OFF` set to anything but `1`, `0` or empty (`OMIT_OFF=true` silently does nothing). It checks simple Node and Python script commands statically; other command shapes are reported as unchecked. It does not resolve every parent layer, check host trust or executable availability, or prove that hooks fired: `liveDelivery` stays `unverified`.
 
-The doctor inspects global Codex hooks plus the current directory's
-`.codex/hooks.json`, `.claude/settings.json` and `.claude/settings.local.json`.
-It reports missing scripts, duplicate registrations, malformed matchers, some
-legacy shell-tool name mismatches, Git `core.hooksPath` overrides, and an
-`OMIT_OFF` set to anything but the literal `1` (which silently does nothing). It checks simple Node/Python
-script commands statically; other command shapes are explicitly unchecked.
-It does not resolve all parent layers, host trust, executable availability, or
-prove that hooks fired. `liveDelivery` remains `unverified`.
+`--context` adds advisory broad-read warnings and a text output guard; default installs add neither.
 
-`--context` adds advisory broad-read warnings and a text output guard. Default
-installations keep the existing safety hooks without adding context controls.
-At more than 6,000 characters, a plain-string shell result is archived privately
-under the OS temporary directory and replaced with head/tail excerpts, selected
-error lines, and its full-output path. Set `OMIT_OUTPUT_CHARS` to 1000–100000 to
-change the excerpt character budget. The wrapper/path adds a small overhead.
-Structured results (objects, arrays, MCP content) are left intact. Storage
-failure preserves the original result and emits a diagnostic. Archives can
-contain sensitive output: files use mode 0600 inside a mode-0700 directory on
-POSIX systems. They persist until temporary storage is cleaned; no existing
-transcript is rewritten. Inspect the archive when a missing middle section
-matters; diagnostic extraction is heuristic and not exhaustive.
+- **Large output.** A plain-string shell result over 6,000 characters is archived under the OS temporary directory and replaced with head and tail excerpts, selected error lines and the full-output path. `OMIT_OUTPUT_CHARS` (1000 to 100000) sets the excerpt budget. Structured results (objects, arrays, MCP content) are left intact, and a storage failure keeps the original result and emits a diagnostic. No existing transcript is rewritten.
+- **Archives can hold sensitive output.** Files are mode 0600 in a mode 0700 directory on POSIX, and persist until temporary storage is cleaned. Inspect one when a missing middle section matters; the error-line extraction is heuristic.
+- **Repeats.** Three consecutive identical command and result pairs in the same cwd and session produce one advisory warning; a changed pair resets the counter. Only hashes and a bounded counter are stored. It does not prove filesystem state is unchanged, and parallel invocations may undercount, so it is not a gate.
 
-Three consecutive identical command/result pairs in the same cwd/session
-produce one advisory warning. A changed pair resets the counter. Only hashes
-and a bounded counter are stored for this check; it does not prove filesystem
-state is unchanged. Parallel invocations may undercount, so this is not a gate.
-
-For another host, invoke `omit context` with JSON on stdin:
+For another host, run `omit context` with JSON on stdin:
 
 ```json
 {"hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"example","cwd":"/your/project","tool_input":{"command":"your command"},"tool_response":"plain text output"}
 ```
 
-Use `PreToolUse` for read-scope advice. Shell names `Bash`, `exec_command`, and
-`shell` are accepted (`tool_input.cmd` is also accepted). `systemMessage` is
-advisory; `decision: "block"` with `reason` requests post-tool feedback replacing
-the result in Codex. Other hosts must translate that response into their own
-replacement API: some only append feedback. Verify delivery and replacement
-before claiming context savings. No model quota or token-saving guarantee is
-inferred from character counts. Set `OMIT_OFF=1` to bypass the hooks; remove only
-the `context-sentinel.mjs` entries to uninstall these optional controls.
+Use `PreToolUse` for read-scope advice. The shell names `Bash`, `exec_command` and `shell` are accepted (`tool_input.cmd` too). `systemMessage` is advisory; `decision: "block"` with `reason` requests post-tool feedback that replaces the result in Codex. Other hosts must translate that into their own replacement API, and some only append feedback, so verify delivery before claiming context savings. No token-saving guarantee is inferred from character counts. To uninstall the optional controls, remove the `context-sentinel.mjs` entries. `omit init skill` copies the packaged skill (`skills/omit/SKILL.md`) to `.agents/skills/omit/SKILL.md`.
 
-The packaged skill remains at `skills/omit/SKILL.md`; `omit init skill` copies it
-to the shared project discovery path. Hosts with different discovery paths can
-install the same skill there. No provider credentials are required.
+### Bench (experimental)
 
-New here? **[GETTING-STARTED.md](GETTING-STARTED.md)** has a copy-paste setup for every agent.
-
-**Claude Code (plugin marketplace)**: one command pair, gets you the skill plus `/omit` and `/omit-edit`:
-
-```
-/plugin marketplace add sriinnu/omit
-/plugin install omit@omit
-```
-
-**Any SKILL.md-aware agent** (Claude Code, Codex, Cursor, and others, via [skills.sh](https://skills.sh)):
-
-```
-npx skills add sriinnu/omit
-```
-
-**Global command**: install once from GitHub, use everywhere:
-
-```
-npm install -g github:sriinnu/omit
-omit init cursor        # or: omit audit / omit gate / omit hook install
-```
-
-**npm / npx**: drops the right rule file into the current repo (never overwrites existing files):
-
-```
-npx @sriinnu/omit init            # AGENTS.md (default)
-npx @sriinnu/omit init claude     # .claude/skills/omit/SKILL.md
-npx @sriinnu/omit init cursor     # .cursor/rules/omit.mdc
-npx @sriinnu/omit init cline      # .clinerules/omit.md
-npx @sriinnu/omit init windsurf   # .windsurf/rules/omit.md
-npx @sriinnu/omit init all        # everything above
-npx @sriinnu/omit hook install    # git pre-commit gate (works with ANY agent)
-```
-
-**Claude Code (manual)**: copy the skill into your project or user skills directory:
-
-```
-skills/omit/SKILL.md  →  .claude/skills/omit/SKILL.md      (project)
-                         ~/.claude/skills/omit/SKILL.md    (all projects)
-```
-
-**Codex / Takumi / any AGENTS.md-aware agent**: copy `AGENTS.md` into your repo root (or append to an existing one), or `npx @sriinnu/omit init codex`.
-
-**GitHub Copilot**: copy `.github/copilot-instructions.md` into your repo, or `npx @sriinnu/omit init copilot`.
-
-**Cursor**: copy `.cursor/rules/omit.mdc` into your repo.
-
-**Cline**: copy `.clinerules/omit.md` into your repo.
-
-**Windsurf**: copy `.windsurf/rules/omit.md` into your repo.
-
-**Anything else**: paste the contents of `AGENTS.md` into the agent's custom-instructions/rules mechanism. It's plain markdown; there is nothing to build.
-
-```
-// omitted: the discipline itself over MCP: MCP exposes tools and data; omit is
-// a behavioral discipline, and rule files + skills already deliver it. The one
-// MCP server omit ships is codemode, which is tooling.
-```
-
-## Commands (Claude Code)
-
-- `/omit [margin|redline|rewrite|off]`: switch or show the current mode
-- `/omit-edit`: run an editor's pass over the current diff: flag bloat, uncited claims, missing footnotes, and cut opportunities
-
-## Releasing
-
-One command, three destinations (npm, GitHub, Homebrew):
-
-    npm run release -- patch    # or minor / major
-
-`scripts/release.mjs` runs the tests (via `preversion`), bumps the version,
-and lands the bump on main **through a PR** (main takes no direct pushes).
-Once checks pass and it merges, the script tags the merge (signed, per repo
-policy) and pushes the tag — which triggers `publish.yml`, **staging** the version on npm
-with a provenance attestation. It then cuts the GitHub release with
-generated notes and waits (up to 30 minutes) while you approve the staged
-version with your security key (`npm stage list @sriinnu/omit`, then
-`npm stage approve <id>`). Once npm serves it, the script updates the
-`omit` formula in [`sriinnu/homebrew-tap`](https://github.com/sriinnu/homebrew-tap),
-again through a PR. A failed step aborts the release, in order.
-
-Never `npm publish` by hand: a local publish cannot attach provenance, and
-npm will not let the same version be republished to add one later. If the CI
-publish fails, fix CI — don't work around it locally.
-
-There is no npm token to keep alive. `publish.yml` uses npm's
-[trusted publishing](https://docs.npmjs.com/trusted-publishers): the workflow
-proves its identity to npm with a short-lived token GitHub mints for that run,
-and npm checks it against the publisher configured in the package's settings
-(GitHub Actions, `sriinnu/omit`, `publish.yml`, stage-only). If staging is
-refused, that form is the thing to check. Nothing goes live without your 2FA
-approval.
+`bench/` makes METHODOLOGY.md runnable: paired agentic runs of the same tasks under baseline, omit or any competing skill, with metrics computed from the actual git diffs and all transcripts kept. See `bench/README.md`.
 
 ## Prior art
 
-The minimalism-pressure idea was popularized by [ponytail](https://github.com/DietrichGebert/ponytail), which deserves its stars. `omit` differs where it matters: shortcuts require citations, the diff is edited *after* it works, safety lines are enumerated and never cut, and what's left out is footnoted instead of silent.
+The minimalism-pressure idea was popularized by [ponytail](https://github.com/DietrichGebert/ponytail), which deserves its stars. omit differs where it matters: shortcuts require citations, the diff is edited *after* it works, safety lines are enumerated and never cut, and what's left out is footnoted instead of silent.
 
 ## License
 
