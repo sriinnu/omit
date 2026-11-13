@@ -24,6 +24,17 @@ inputs:
       Default "none": the verdict is a comment, and the check stays green.
     required: false
     default: 'none'
+  gate:
+    description: >
+      Also gate every commit in the PR with `omit gate --range`, and fail the
+      check on a block. Adoption and mode are read from the PR's base, so a PR
+      cannot loosen its own gate. Runs omit from this action's own checkout, never
+      the PR's code, with execution off (OMIT_NO_EXEC=1): receipts and the linter
+      are reported as not run. Needs the full history (checkout with fetch-depth 0)
+      and a pull_request event: pull_request_target would hand a fork's PR a
+      write token and secrets, and the whole point is that the PR's code gets neither.
+    required: false
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -83,6 +94,38 @@ runs:
         else
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/omit-comment.md"
         fi
+    - name: Run omit gate
+      id: gate
+      if: inputs.gate == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        # load-bearing: never `exec`: the checked-out tree is the PR's, and its
+        # receipts and lint config are its author's code.
+        OMIT_NO_EXEC: '1'
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        # A pull_request checkout is a merge of the PR into the base branch as it
+        # is NOW; its first parent is the base the PR is judged against. A plain
+        # head checkout falls back to the event's base sha.
+        BASE="$BASE_SHA"
+        if git rev-parse --verify --quiet 'HEAD^2' > /dev/null; then BASE=$(git rev-parse 'HEAD^1'); fi
+        if [ -z "$BASE" ]; then
+          echo "omit gate: no pull_request base to judge against — run this on pull_request."
+          exit 1
+        fi
+        if ! node "$ACTION_PATH/bin/omit.mjs" gate --range "$BASE..HEAD" --json > "$RUNNER_TEMP/omit-gate.json"; then
+          cat "$RUNNER_TEMP/omit-gate.json"
+          exit 1
+        fi
+        cat "$RUNNER_TEMP/omit-gate.json"
+    - name: Enforce gate
+      if: steps.gate.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "omit: the gate blocked this PR, or could not read its history — see the step above."
+        exit 1
     - name: Enforce fail-on
       if: steps.audit.outcome == 'failure'
       shell: bash
