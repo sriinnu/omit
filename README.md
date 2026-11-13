@@ -118,6 +118,7 @@ npx @sriinnu/omit verify         # re-check every claim in .omit/receipts.jsonl
 npx @sriinnu/omit guard "<cmd>"  # is this shell command a disaster? (wire into any hook system)
 npx @sriinnu/omit leak "<cmd>"   # would this command print a real secret to stdout?
 npx @sriinnu/omit gate           # the pre-commit check: secrets/TLS everywhere, the rest where omit was adopted
+npx @sriinnu/omit gate --range origin/main..HEAD --json  # CI: every commit in a PR, judged by the BASE's adoption and mode; byte-identical JSON verdict
 npx @sriinnu/omit hook install codex  # write .codex/hooks.json — live sentinels inside Codex CLI
 npx @sriinnu/omit hook install ribhu  # write .ribhu/hooks.json — live sentinels inside Ribhu
 npx @sriinnu/omit hook run <hook>     # run one hook on a payload from stdin (what installs from an npx cache call)
@@ -143,6 +144,9 @@ jobs:
         # with: { exec: true }   # execute receipts' `run` snippets to verify them
                                  # fully. Off by default: a PR's receipts are
                                  # untrusted code, and this runs on pull requests.
+        # with: { gate: true }   # also run `omit gate --range` over the PR's commits and
+                                 # fail on a block, from this action's own code with
+                                 # execution off. Needs fetch-depth 0 and `pull_request`.
         # with: { fail-on: secret }  # fail the check on hardcoded secrets
                                      # (hazard = any hazard; default none = comment only)
 ```
@@ -224,6 +228,7 @@ The mode is enforced by the hooks, not left to the model: it lives in `.omit/mod
 
 - **Safety, every repo, every mode (`off` and `OMIT_OFF=1` included):** secrets and TLS-verification bypass. Placeholders AWS publishes in its own docs (the `…EXAMPLE` access key ID and its example secret key) are not leaks; any other key still is.
 - **Editorial, only where the repo adopted omit:** injection patterns, new dependencies without a verified receipt, refuted receipts, and the repo's own linter, which runs on the staged content (an index snapshot), so `git add -p` leftovers on disk do not matter. A repo has adopted omit when `.omit/` is tracked (in HEAD or the index) or `git config omit.enforce true`; `git config omit.enforce false` opts out even then. Elsewhere the gate skips these with one line saying how to opt in. In `margin` they are reported without failing; in `off` (or `OMIT_OFF=1`) they are skipped.
+- **A pre-commit hook runs as the agent it checks, so CI recomputes the verdict.** `omit gate --range <base>..<head>` (or `--base <ref>`) gates each commit against its first parent, so a secret added in one commit and removed in the next still fails. Adoption and mode come from the base revision's tree only (not the head, not `OMIT_MODE`, not git config), so a PR that sets `.omit/mode` to `off` or deletes `.omit/` is still gated by the base's rules. A merge commit is judged on the lines new relative to all its parents, so a clean merge adds nothing. `--json` prints a verdict with `omitVersion`, `rulesHash` (sha256 of the rule files), `base`, `head`, `adopted`, `mode`, `exec`, `ok` and `findings`: sorted keys, no timestamps or paths, byte-identical for the same inputs. `exec: false` marks a run with `OMIT_NO_EXEC` set, where receipt snippets and the linter were not run. `omit audit --fail-on gate` uses the same decision.
 - **Injection exemptions:** docs (`*.md`, `*.mdx`, `*.rst`, `*.txt`, `docs/`), vendored and minified code (`vendor/`, `third_party/`, `*.min.js`, `*.min.css`) and lockfiles. Secrets and TLS bypass are still read there.
 
 Because editorial checks honour the mode, a committed `.omit/mode` can quiet a repo's own editorial commit checks; it cannot touch the safety ones.

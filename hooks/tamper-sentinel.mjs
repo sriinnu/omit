@@ -40,8 +40,13 @@ const PROTECTED_PATHS = ['.claude', '.claude/settings.json', '.claude/settings.l
 const globHits = (s) =>
   s.split(/\s+/).some((w) => {
     if (!/[*?[]/.test(w)) return false
-    const re = new RegExp('^' + w.replace(/^['"]|['"]$/g, '').replace(/^\.\//, '').replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]') + '/?$', 'i')
-    return PROTECTED_PATHS.some((p) => re.test(p))
+    // An unterminated `[` is no glob (the shell reads it literally), so it matches no path.
+    try {
+      const re = new RegExp('^' + w.replace(/^['"]|['"]$/g, '').replace(/^\.\//, '').replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]') + '/?$', 'i')
+      return PROTECTED_PATHS.some((p) => re.test(p))
+    } catch {
+      return false
+    }
   })
 // An interpreter reading code from -e/-c, stdin or a heredoc can write any
 // file it names, wherever the separators in its code fall.

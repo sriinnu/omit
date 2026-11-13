@@ -7,9 +7,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findTls } from '../lib/tls.mjs'
 import { findHazards } from '../lib/hazards.mjs'
@@ -38,7 +38,16 @@ function repo() {
 
 const hook = (name, payload, env = {}) =>
   spawnSync(process.execPath, [join(HOOKS, `${name}.mjs`)], { encoding: 'utf8', input: JSON.stringify(payload), env: { ...ENV, ...env } })
-const cli = (dir, args, input) => spawnSync(process.execPath, [BIN, ...args], { cwd: dir, encoding: 'utf8', env: ENV, input })
+const cli = (dir, args, input, env = ENV) => spawnSync(process.execPath, [BIN, ...args], { cwd: dir, encoding: 'utf8', env, input })
+
+// PATH with no `omit` on it (a developer's machine may have one), or with a stub first.
+const NO_OMIT = (process.env.PATH ?? '').split(delimiter).filter((d) => !existsSync(join(d, 'omit'))).join(delimiter)
+const envWithOmit = () => {
+  const bin = mkdtempSync(join(tmpdir(), 'omit-bin-'))
+  writeFileSync(join(bin, 'omit'), '#!/bin/sh\n')
+  chmodSync(join(bin, 'omit'), 0o755)
+  return { ...ENV, PATH: bin + delimiter + NO_OMIT }
+}
 
 test('TLS bypasses are found in commands and code, CA-bundle fixes are not', () => {
   for (const bad of [
@@ -190,10 +199,10 @@ test('installers: Claude mirrors the plugin, the pre-commit gate is pinned, doct
   const plugin = JSON.parse(readFileSync(join(HOOKS, 'hooks.json'), 'utf8')).hooks
   assert.deepEqual(Object.keys(installed).sort(), Object.keys(plugin).sort())
 
-  assert.equal(cli(dir, ['hook', 'install']).status, 0)
+  assert.equal(cli(dir, ['hook', 'install'], undefined, { ...ENV, PATH: NO_OMIT }).status, 0)
   const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   assert.match(readFileSync(join(dir, '.git', 'hooks', 'pre-commit'), 'utf8'), new RegExp(`@sriinnu/omit@${version.replaceAll('.', '\\.')} gate`))
-  assert.match(cli(dir, ['hook', 'install']).stdout, /already installed/)
+  assert.match(cli(dir, ['hook', 'install'], undefined, { ...ENV, PATH: NO_OMIT }).stdout, /already installed/)
 
   assert.equal(cli(dir, ['hook', 'install', 'ribhu']).status, 0)
   const ribhu = doctor(dir, join(dir, 'no-codex-home')).findings.filter((f) => f.file?.endsWith(join('.ribhu', 'hooks.json')))
@@ -332,11 +341,21 @@ test('usability: the pre-commit gate runs before an existing hook can exit 0', (
   const { dir } = repo()
   const hookPath = join(dir, '.git', 'hooks', 'pre-commit')
   writeFileSync(hookPath, '#!/bin/sh\necho my-lint\nexit 0\n')
-  assert.equal(cli(dir, ['hook', 'install']).status, 0)
+  assert.equal(cli(dir, ['hook', 'install'], undefined, { ...ENV, PATH: NO_OMIT }).status, 0)
   assert.match(readFileSync(hookPath, 'utf8'), /^#!\/bin\/sh\nnpx -y @sriinnu\/omit@[\w.-]+ gate \|\| exit 1\necho my-lint/)
   writeFileSync(hookPath, '#!/usr/bin/env python3\nprint(1)\n')
   assert.notEqual(cli(dir, ['hook', 'install']).status, 0)
   assert.equal(readFileSync(hookPath, 'utf8'), '#!/usr/bin/env python3\nprint(1)\n')
+})
+
+test('hook install writes a bare `omit gate` when omit is on PATH, and pinned npx when it is not', () => {
+  const { dir } = repo()
+  const hookPath = join(dir, '.git', 'hooks', 'pre-commit')
+  assert.equal(cli(dir, ['hook', 'install'], undefined, envWithOmit()).status, 0)
+  assert.equal(readFileSync(hookPath, 'utf8'), '#!/bin/sh\nomit gate || exit 1\n')
+  // Reinstalling where omit is gone moves the same line to the pinned fallback, not a second gate.
+  assert.equal(cli(dir, ['hook', 'install'], undefined, { ...ENV, PATH: NO_OMIT }).status, 0)
+  assert.match(readFileSync(hookPath, 'utf8'), /^#!\/bin\/sh\nnpx -y @sriinnu\/omit@[\w.-]+ gate \|\| exit 1\n$/)
 })
 
 test('usability: doctor counts duplicates within one hooks file, not across agents', () => {
