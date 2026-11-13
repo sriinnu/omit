@@ -1,0 +1,49 @@
+name: omit-gate
+
+# load-bearing: `pull_request_target`, not `pull_request`. On `pull_request`
+# GitHub runs the PR's own copy of the workflow, so a PR could keep the job name
+# `omit-gate` and replace its steps with ones that pass. On `pull_request_target`
+# GitHub runs the workflow as defined on the base branch, which a PR cannot edit.
+# That trigger also carries a write-capable token and secrets, so this job never
+# executes anything from the PR: it checks the PR out as inert files, runs omit
+# from the base branch's own checkout with OMIT_NO_EXEC=1 (receipts and the
+# linter are not run), and takes read-only permissions. Do not add `npm install`,
+# a script from `pr/`, or a `uses:` that points into `pr/`.
+on: pull_request_target
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    # The job name is stable on purpose: add `omit-gate` to the branch's required checks.
+    name: omit-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+          path: trusted
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Gate every commit in the PR
+        working-directory: pr
+        env:
+          OMIT_NO_EXEC: '1'
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # `pr/` is checked out at the PR's head, which is what `--range` needs
+          # as HEAD; the base is the commit the PR is judged against.
+          # The base may have moved past what the fork has; take it from the trusted
+          # checkout. If it cannot be read, the gate refuses to judge and the check fails.
+          git fetch --no-tags ../trusted "$BASE_SHA"
+          node ../trusted/bin/omit.mjs gate --range "$BASE_SHA..HEAD" --json

@@ -8,10 +8,10 @@ omit works two ways, and the best setups use both:
 ## The one-time setup
 
 ```
-npm install -g github:sriinnu/omit
+npm install -g @sriinnu/omit      # Node 20 or newer; or: brew install sriinnu/tap/omit
 ```
 
-That gives you a global `omit` command everywhere: `omit init cursor`, `omit audit`, `omit gate`. Prefer not to install? One-off runs work too: `npx github:sriinnu/omit init cursor`. Every `npx @sriinnu/omit ...` below can be written as plain `omit ...` once globally installed.
+That gives you a global `omit` command everywhere: `omit init cursor`, `omit audit`, `omit gate`. Install it globally for the pre-commit gate: `npx` costs about 3 seconds per commit and hangs offline. Every `npx @sriinnu/omit ...` below can be written as plain `omit ...` once globally installed.
 
 ## Claude Code (full experience: discipline + live hooks)
 
@@ -48,7 +48,7 @@ For live hooks (not just the discipline), Codex CLI has its own hooks system wit
 npx @sriinnu/omit hook install codex
 ```
 
-Writes `.codex/hooks.json` pointing at this install's hook scripts. The command sentinel and leak sentinel are verified against Codex's documented schema — Codex's own docs show `PreToolUse` firing with `tool_input.command` for Bash, same as Claude Code, and both hook scripts were tested directly against that exact payload shape — though not yet against a live Codex session actually firing them end-to-end. The dep/hazard/lint sentinels and the Final Draft gate are wired to `apply_patch|Edit|Write` too, but Codex's `apply_patch` tool input shape for those hasn't been verified here; they no-op safely if the field they expect isn't present, so worst case is reduced coverage, not a false pass. Codex requires trusting new hook definitions once per session — run `/hooks` in a Codex session to review them.
+Writes `.codex/hooks.json` pointing at this install's hook scripts. The command, leak and tamper sentinels run before each `Bash` command, and the tamper sentinel checks file edits too. The dependency, hazard and lint sentinels are PostToolUse hooks for `apply_patch|Edit|Write` (and the first two for `Bash`), so they object after the write, not before it. The Final Draft gate runs on Stop. The file sentinels read `apply_patch` from `tool_input.command`, check every added or updated path and move destination, skip deleted files, and object to a malformed patch envelope. Payload tests cover these hooks; live firing inside a Codex session is not yet verified end to end. Codex requires trusting new hook definitions once per session — run `/hooks` in a Codex session to review them.
 
 ## Takumi
 
@@ -106,7 +106,7 @@ Rule files are advisory outside Claude Code. These two are not:
 npx @sriinnu/omit hook install
 ```
 
-Adds the omit gate to `.git/hooks/pre-commit`: commits containing secrets, injection-prone lines, uncited new dependencies, or lint failures are refused, whether Claude, Cursor, Copilot, or a human wrote them.
+Adds the omit gate to `.git/hooks/pre-commit`: commits containing secrets or TLS-verification bypass are refused in every repo, and in a repo that adopted omit (`.omit/` tracked, or `git config omit.enforce true`) so are injection-prone lines, uncited new dependencies and lint failures, whether Claude, Cursor, Copilot, or a human wrote them. The gate runs the repo's receipts and linter; set `OMIT_NO_EXEC=1` in a repo you haven't read.
 
 ```yaml
 # .github/workflows/omit.yml
@@ -124,6 +124,22 @@ jobs:
 ```
 
 Comments the verdict (net lines, new deps, hazards, lint) on every PR.
+
+## Context controls
+
+Optional, local, and no model or provider API. Install with `omit hook install codex --context` or `omit hook install claude --context`; default installs add none of this. They add advisory broad-read warnings and a text output guard. Other hosts need the stdin contract below; automatic interception is not universal.
+
+- **Large output.** A plain-string shell result over 6,000 characters is archived under the OS temporary directory and replaced with head and tail excerpts, selected error lines and the full-output path. `OMIT_OUTPUT_CHARS` (1000 to 100000) sets the excerpt budget. Structured results (objects, arrays, MCP content) are left intact, and a storage failure keeps the original result and emits a diagnostic. No existing transcript is rewritten.
+- **Archives can hold sensitive output.** Files are mode 0600 in a mode 0700 directory on POSIX, and persist until temporary storage is cleaned. Inspect one when a missing middle section matters; the error-line extraction is heuristic.
+- **Repeats.** Three consecutive identical command and result pairs in the same cwd and session produce one advisory warning; a changed pair resets the counter. Only hashes and a bounded counter are stored. It does not prove filesystem state is unchanged, and parallel invocations may undercount, so it is not a gate.
+
+For another host, run `omit context` with JSON on stdin:
+
+```json
+{"hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"example","cwd":"/your/project","tool_input":{"command":"your command"},"tool_response":"plain text output"}
+```
+
+Use `PreToolUse` for read-scope advice. The shell names `Bash`, `exec_command` and `shell` are accepted (`tool_input.cmd` too). `systemMessage` is advisory; `decision: "block"` with `reason` requests post-tool feedback that replaces the result in Codex. Other hosts must translate that into their own replacement API, and some only append feedback, so verify delivery before claiming context savings. No token-saving guarantee is inferred from character counts. To uninstall the optional controls, remove the `context-sentinel.mjs` entries. `omit init skill` copies the packaged skill (`skills/omit/SKILL.md`) to `.agents/skills/omit/SKILL.md`.
 
 ## CLI cheat sheet
 

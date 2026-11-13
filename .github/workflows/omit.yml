@@ -20,36 +20,4 @@ jobs:
       # nothing else does — test.yml only proves the file parses.
       - uses: ./
 
-  # The gate, recomputed where the PR's author cannot write. `pull_request`, not
-  # `pull_request_target`: a fork's PR gets a read-only token and no secrets, and
-  # nothing here runs the PR's code anyway. omit comes from the base branch's own
-  # checkout, never from the PR (`uses: ./` above would run the PR's omit), and
-  # OMIT_NO_EXEC=1 keeps receipts and the linter from executing the PR's files.
-  # The job name is stable on purpose: add `omit-gate` to the branch's required
-  # checks. A PR can edit this file, but a required check that never reports
-  # still blocks the merge.
-  gate:
-    name: omit-gate
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: pr
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.base_ref }}
-          path: trusted
-          persist-credentials: false
-      - name: Gate every commit in the PR
-        working-directory: pr
-        env:
-          OMIT_NO_EXEC: '1'
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          BASE="$BASE_SHA"
-          if git rev-parse --verify --quiet 'HEAD^2' > /dev/null; then BASE=$(git rev-parse 'HEAD^1'); fi
-          node ../trusted/bin/omit.mjs gate --range "$BASE..HEAD" --json
+  # The commit gate lives in omit-gate.yml, on pull_request_target, so a PR cannot rewrite it.
