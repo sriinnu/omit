@@ -3,10 +3,10 @@
 // CI, and any other agent's hook system all call the same commands.
 //
 //   omit init [agents|claude|cursor|cline|windsurf|all]   copy rule files into this repo
-//   omit audit [--base <ref>|--session] [--json|--markdown] [--fail-on <none|secret|hazard>]  net diff, new deps, hazards
+//   omit audit [--base <ref>|--session] [--json|--markdown] [--fail-on <none|secret|hazard|gate>]  net diff, new deps, hazards
 //   omit init --check                                     report rule files that drifted from this omit version
 //   omit check <file...>                                  hazard-scan specific files
-//   omit gate                                             audit the staged diff. Always blocks secrets and TLS bypass; injection, uncited deps, refuted receipts and lint only in repos that adopted omit (.omit/ tracked, or git config omit.enforce true), per mode
+//   omit gate [--range <base>..<head>|--base <ref>] [--json]  audit the staged diff, or every commit in a range with the base's adoption and mode. Always blocks secrets and TLS bypass; injection, uncited deps, refuted receipts and lint only in repos that adopted omit (.omit/ tracked, or git config omit.enforce true), per mode
 //   omit verify                                           re-check every claim in .omit/receipts.jsonl
 //   omit leak "<cmd>"                                     would this command print a real secret to stdout?
 //   omit hook install                                     add the gate to .git/hooks/pre-commit
@@ -16,8 +16,8 @@
 //   omit mode [margin|redline|rewrite|off]                print the enforcement mode, or set it
 //   omit codemode run [file]                              run one sandboxed script over read-only repo tools (stdin without a file)
 //   omit codemode                                         the same, as an MCP server on stdio
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, chmodSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, chmodSync } from 'node:fs'
+import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isManifest, addedDeps, unparsedDependencyFile } from '../lib/deps.mjs'
 import { git, probe, repoRoot, fileAtRevision, GitError, parseNumstat, readBaseline, snapshotTree, addedLinesOf } from '../lib/git.mjs'
@@ -28,7 +28,9 @@ import { assessCommand } from '../lib/danger.mjs'
 import { assessLeak } from '../lib/leaks.mjs'
 import { execute, serve } from '../lib/codemode.mjs'
 import { doctor } from '../lib/doctor.mjs'
-import { DESCRIBE, MODES, readMode, writeMode, offMisspelled } from '../lib/mode.mjs'
+import { DESCRIBE, MODES, readMode, writeMode, offMisspelled, parseMode } from '../lib/mode.mjs'
+import { execDisabled } from '../lib/exec.mjs'
+import { decide, verdictOf, canonical } from '../lib/verdict.mjs'
 
 const cwd = process.cwd()
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -156,6 +158,13 @@ function readLines(root, path) {
   return text === null || text.includes('\0') ? null : splitLines(text)
 }
 
+// A file at a commit: its text, or null when that commit does not hold it.
+function textAt(root, rev, path) {
+  const r = fileAtRevision(root, rev, path)
+  if (r.failed) die(`could not read ${path} at ${rev} — ${r.reason}`)
+  return r.present ? r.text : null
+}
+
 function manifestText(root, path, oldPath, version) {
   if (version === '') return indexText(root, path) ?? '' // the index: what is being committed
   if (version !== null) {
@@ -218,11 +227,15 @@ function hooksPathAt(root) {
 // a snapshot of the tree now, two trees, so an untracked file is already in the
 // second one and pre-session dirt is in both. omit's own directory is left out
 // by pathspec, so numstat and the patch still describe the same diff.
-function collect(diffRange, session = null, { lint: wantLint = true } = {}) {
+// `diffRange` is a revision (against the working tree), '--cached', or a
+// { from, to } pair of commits — a commit's own change, which no working tree or
+// index takes part in. `ledger` lets a range check receipts once, not per commit.
+function collect(diffRange, session = null, { lint: wantLint = true, ledger: given = null } = {}) {
   const root = rootOrDie()
+  const pair = typeof diffRange === 'object'
   const staged = diffRange === '--cached'
-  if (!staged && !session) requireRevision(root, diffRange)
-  const range = session ? [session.tree, snapshotTree(root), '--', '.', ':(exclude).omit'] : [diffRange]
+  if (!staged && !session && !pair) requireRevision(root, diffRange)
+  const range = session ? [session.tree, snapshotTree(root), '--', '.', ':(exclude).omit'] : pair ? [diffRange.from, diffRange.to] : [diffRange]
 
   const files = []
   const binaries = []
@@ -246,7 +259,7 @@ function collect(diffRange, session = null, { lint: wantLint = true } = {}) {
   // Excluded from the staged range — a gate judges what is being committed, and
   // an untracked file is not in the commit.
   const untracked = new Map()
-  if (!staged && !session) {
+  if (!staged && !session && !pair) {
     for (const path of git(root, ['ls-files', '--others', '--exclude-standard']).split('\n').filter(Boolean)) {
       if (path.startsWith('.omit/')) continue // omit's own ledger, not the change
       const lines = readLines(root, path)
@@ -280,7 +293,7 @@ function collect(diffRange, session = null, { lint: wantLint = true } = {}) {
   // directly instead: how git chose to represent a file is a formatting decision,
   // and it must not decide whether the file is examined.
   for (const b of binaries) {
-    const text = contentOf(root, b.path, staged)
+    const text = pair ? textAt(root, diffRange.to, b.path) : contentOf(root, b.path, staged)
     if (text === null) continue // gone from the index, or deleted: nothing left to scan
     files.push({ path: b.path, oldPath: b.oldPath, added: 0, deleted: 0, binary: true })
     addedLines.push(...splitLines(text))
@@ -291,8 +304,8 @@ function collect(diffRange, session = null, { lint: wantLint = true } = {}) {
   // minified manifest is read the same as a pretty-printed one.
   const newDeps = []
   for (const f of files.filter((f) => isManifest(f.path))) {
-    const before = manifestText(root, f.path, f.oldPath, staged ? 'HEAD' : session ? session.tree : diffRange)
-    const after = manifestText(root, f.path, f.path, staged ? '' : null)
+    const before = pair ? textAt(root, diffRange.from, f.oldPath) ?? '' : manifestText(root, f.path, f.oldPath, staged ? 'HEAD' : session ? session.tree : diffRange)
+    const after = pair ? textAt(root, diffRange.to, f.path) ?? '' : manifestText(root, f.path, f.path, staged ? '' : null)
     newDeps.push(...addedDeps(f.path, before, after).map((dep) => ({ dep, manifest: f.path })))
   }
 
@@ -310,7 +323,7 @@ function collect(diffRange, session = null, { lint: wantLint = true } = {}) {
   // A new dependency is cited only by a VERIFIED new-dep receipt. A ledger line
   // that merely names the dep is an assertion, and assertions are the thing this
   // mechanism exists to stop accepting.
-  const ledger = ledgerForChange(root, staged)
+  const ledger = given ?? ledgerForChange(root, staged)
   const uncitedDeps = newDeps.filter((d) => ledger.citations.get(d.dep)?.status !== 'verified')
 
   // The gate lints the index, an audit lints the working tree; null is "not asked".
@@ -392,14 +405,14 @@ function render(r, fmt) {
 
 function audit(args) {
   const baseIdx = args.indexOf('--base')
-  if (baseIdx !== -1 && (!args[baseIdx + 1] || args[baseIdx + 1].startsWith('-'))) die('usage: omit audit [--base <ref> | --session] [--json|--markdown] [--fail-on <none|secret|hazard>]')
+  if (baseIdx !== -1 && (!args[baseIdx + 1] || args[baseIdx + 1].startsWith('-'))) die('usage: omit audit [--base <ref> | --session] [--json|--markdown] [--fail-on <none|secret|hazard|gate>]')
   const base = baseIdx !== -1 ? args[baseIdx + 1] : 'HEAD'
   const fmt = args.includes('--json') ? 'json' : args.includes('--markdown') ? 'markdown' : 'text'
   // The verdict is advisory by default; --fail-on lets CI gate on it without a
   // second run (a second run would execute the ledger's snippets twice).
   const failIdx = args.indexOf('--fail-on')
   const failOn = failIdx !== -1 ? args[failIdx + 1] : 'none'
-  if (!['none', 'secret', 'hazard'].includes(failOn)) die('usage: omit audit [--base <ref> | --session] [--json|--markdown] [--fail-on <none|secret|hazard>]')
+  if (!['none', 'secret', 'hazard', 'gate'].includes(failOn)) die('usage: omit audit [--base <ref> | --session] [--json|--markdown] [--fail-on <none|secret|hazard|gate>]')
   let session = null
   if (args.includes('--session')) {
     if (baseIdx !== -1) die('--session and --base name different starting points; pick one')
@@ -410,6 +423,13 @@ function audit(args) {
   console.log(render(r, fmt))
   // exitCode, not exit(): a piped stdout is async, and exit() would cut the verdict off.
   if ((failOn === 'secret' && r.hazards.some((h) => h.type === 'secret')) || (failOn === 'hazard' && r.hazards.length)) process.exitCode = 1
+  if (failOn === 'gate') {
+    // The gate's own decision, on this change, in this repo's mode and adoption.
+    const mode = readMode(cwd)
+    const d = decide(r, { mode, editorial: mode !== 'off' && adopted(rootOrDie()), scope: 'in this change' })
+    for (const m of [...d.safety, ...d.objections]) console.error(`omit gate: ${m}`)
+    if (!d.ok) process.exitCode = 1
+  }
 }
 
 // A repo adopts omit's editorial checks by tracking `.omit/` (in HEAD or the
@@ -423,65 +443,119 @@ function adopted(root) {
   return [['ls-files', '--', '.omit'], ['ls-tree', '-r', '--name-only', 'HEAD', '--', '.omit']].some((args) => probe(root, args).out?.trim())
 }
 
-function gate() {
+// What the gate says, once the decision is made: the verdict (text or JSON) and
+// the exit code. With --json stdout carries only the verdict object, so a CI step
+// can diff it; every message goes to stderr either way.
+function report({ d, verdict, fmt, text }) {
+  if (fmt === 'json') console.log(canonical(verdict))
+  else console.log(text)
+  const block = !d.ok || d.objections.length > 0
+  for (const m of d.safety) console.error(`\n⛔ omit gate: ${m}`)
+  const marker = d.ok ? '⚠' : '⛔'
+  for (const m of d.objections) console.error(`\n${marker} omit gate: ${m}`)
+  if (block && d.ok) console.error('\n(margin mode: reported, not enforced)')
+  // exitCode, not exit(): a piped stdout is async, and exit() would cut the verdict off.
+  if (!d.ok) process.exitCode = 1
+}
+
+const skipNote = (mode) => `omit gate: editorial checks (injection, new deps, receipts, lint) skipped — ${mode === 'off' ? 'mode is off' : 'this repo has not adopted omit; opt in with \`git config omit.enforce true\` or by committing .omit/'}.`
+
+function gate(args) {
+  const fmt = args.includes('--json') ? 'json' : 'text'
+  const range = args.indexOf('--range')
+  const baseIdx = args.indexOf('--base')
+  if (range !== -1 || baseIdx !== -1) return gateRange(args, fmt)
   const root = rootOrDie()
   const mode = readMode(cwd)
-  const editorial = mode !== 'off' && adopted(root)
+  const isAdopted = adopted(root)
+  const editorial = mode !== 'off' && isAdopted
   const r = collect('--cached', null, { lint: editorial })
-  console.log(render(r, 'text'))
   // Safety: enforced in every repo and every mode, `off` included. A shadowed
   // hooks directory is reported, not fatal: `core.hooksPath` is a legitimate
   // global setup, and failing every commit over it would be a false objection.
-  const secrets = r.hazards.filter((h) => h.type === 'secret')
-  if (secrets.length) {
-    console.error(`\n⛔ omit gate: ${secrets.length} secret(s) staged. Move to env/secrets manager, rotate if real, restage.`)
-    process.exit(1)
+  const d = decide(r, { mode, editorial })
+  const head = probe(root, ['rev-parse', '--verify', '--quiet', 'HEAD'])
+  const verdict = verdictOf({ version, base: head.ok ? head.out.trim() : null, head: 'index', adopted: isAdopted, mode, exec: !execDisabled(), r, editorial }, d)
+  report({ d, verdict, fmt, text: render(r, 'text') })
+  if (!editorial && d.ok) (fmt === 'json' ? console.error : console.log)(skipNote(mode))
+}
+
+// Every commit in base..head, judged with the BASE revision's adoption and mode:
+// a change cannot loosen the gate that judges it by adding .omit/mode = off or by
+// deleting .omit/. The environment's OMIT_MODE and git config's omit.enforce are
+// not read either — only the base tree, so the same range gives the same verdict
+// on a laptop and in CI. Each commit is diffed against its first parent, so a
+// secret added in one commit and removed in the next still fails. A merge commit
+// is judged only on the lines it adds relative to ALL its parents (git's combined
+// diff), so a clean merge adds nothing and an incoming branch is not audited
+// twice; omitted: new dependencies introduced by a merge itself (a merge that
+// edits a manifest to add one) — add back if evil merges matter here.
+// The working tree must be the range's head: receipts and the linter read it.
+function gateRange(args, fmt) {
+  const root = rootOrDie()
+  const arg = (flag) => args[args.indexOf(flag) + 1]
+  const spec = args.includes('--range') ? arg('--range') : `${arg('--base')}..HEAD`
+  const m = (spec ?? '').split('..')
+  if (m.length !== 2 || !m[0] || !m[1] || m[0].endsWith('.') || m[1].startsWith('.')) die('usage: omit gate --range <base>..<head> | --base <ref>   (two dots, two revisions)')
+  const sha = (rev) => {
+    const r = probe(root, ['rev-parse', '--verify', '--quiet', `${rev}^{commit}`])
+    if (!r.ok) die(`${rev} is not a revision this repo can resolve — refusing to gate a range that cannot be read (a shallow clone? fetch the full history)`)
+    return r.out.trim()
   }
-  if (r.hazards.some((h) => h.type === 'tls')) {
-    console.error(`\n⛔ omit gate: TLS-verification bypass staged. Point TLS at the CA bundle instead of switching verification off, or mark a reviewed line with omit-allow: <reason>.`)
-    process.exit(1)
+  const base = sha(m[0])
+  const head = sha(m[1])
+  if (head !== sha('HEAD')) die(`--range head ${m[1]} is not the checked-out commit — check it out first: receipts and lint read the working tree`)
+
+  const isAdopted = git(root, ['ls-tree', '-r', '--name-only', base, '--', '.omit']).trim() !== ''
+  const mode = parseMode(textAt(root, base, '.omit/mode')?.slice(0, 64))
+  const editorial = mode !== 'off' && isAdopted
+  const ledger = editorial ? ledgerForChange(root, false) : { inChange: true, results: [], citations: new Map() }
+
+  const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+  const r = { hazards: [], uncitedDeps: [], receiptFailures: ledger.results.filter((x) => x.status === 'failed'), ledgerInChange: ledger.inChange, lint: null }
+  const changed = new Set()
+  const commits = git(root, ['rev-list', '--reverse', '--topo-order', `${base}..${head}`]).split('\n').filter(Boolean)
+  for (const commit of commits) {
+    const parents = git(root, ['rev-list', '--parents', '-n', '1', commit]).trim().split(' ').slice(1)
+    let part
+    if (parents.length > 1) {
+      const lines = mergeNovelLines(root, commit)
+      part = { hazards: [...findHazards(lines.all).filter((h) => h.type !== 'injection'), ...findHazards(lines.code).filter((h) => h.type === 'injection')], uncitedDeps: [], files: [] }
+    } else {
+      part = collect({ from: parents[0] ?? EMPTY_TREE, to: commit }, null, { lint: false, ledger })
+    }
+    r.hazards.push(...part.hazards.map((h) => ({ ...h, commit })))
+    r.uncitedDeps.push(...part.uncitedDeps)
+    for (const f of part.files) changed.add(f.path)
   }
-  if (!editorial) {
-    console.log(`omit gate: editorial checks (injection, new deps, receipts, lint) skipped — ${mode === 'off' ? 'mode is off' : 'this repo has not adopted omit; opt in with `git config omit.enforce true` or by committing .omit/'}.`)
-    return
+  // The linter reads the checked-out head, so only files that survive into it.
+  if (editorial) r.lint = lintFiles(root, [...changed].filter((p) => existsSync(join(root, p))).sort())
+
+  const d = decide(r, { mode, editorial, scope: 'in the range' })
+  const verdict = verdictOf({ version, base, head, adopted: isAdopted, mode, exec: !execDisabled(), r, editorial }, d)
+  report({ d, verdict, fmt, text: `omit gate ${base.slice(0, 12)}..${head.slice(0, 12)}: ${commits.length} commit(s), mode ${mode}, ${isAdopted ? 'adopted' : 'not adopted'}, ${d.ok ? 'ok' : 'BLOCKED'}` })
+  if (!editorial && d.ok) (fmt === 'json' ? console.error : console.log)(skipNote(mode))
+}
+
+// The lines a merge commit adds that none of its parents have: in git's combined
+// diff, a hunk line is new relative to every parent only when all of its leading
+// marker columns are '+'.
+function mergeNovelLines(root, commit) {
+  const all = []
+  const code = []
+  let path = null
+  let columns = 0
+  for (const l of git(root, ['diff-tree', '--cc', '-p', '--no-commit-id', '-r', commit]).split('\n')) {
+    if (l.startsWith('diff --cc ') || l.startsWith('diff --combined ')) {
+      path = l.replace(/^diff --(?:cc|combined) /, '')
+      columns = 0
+    } else if (l.startsWith('@@@')) columns = /^@+/.exec(l)[0].length - 1
+    else if (columns && l.slice(0, columns) === '+'.repeat(columns)) {
+      all.push(l.slice(columns))
+      if (!isInjectionExempt(path)) code.push(l.slice(columns))
+    }
   }
-  // Editorial objections: redline and rewrite block; margin reports and passes.
-  const objections = []
-  if (r.receiptFailures.length) {
-    objections.push(
-      `${r.receiptFailures.length} receipt(s) in ${LEDGER} did not survive their own check — a refuted claim is a fabricated citation:\n` +
-        r.receiptFailures.map((f) => `  line ${f.at} (${f.claim ?? 'no claim'}): ${f.checks.filter((c) => c.ok === false).map((c) => c.detail).join('; ')}`).join('\n') +
-        `\nFix the receipt or the code it cites, then re-run.`
-    )
-  }
-  if (r.uncitedDeps.length) {
-    objections.push(
-      `new dep(s) without a verified receipt: ${r.uncitedDeps.map((d) => d.dep).join(', ')}.` +
-        (r.ledgerInChange
-          ? ''
-          : `\n   ${LEDGER} is not part of this commit — receipts are read from the index, so a ledger that is not being committed cites nothing.`) +
-        `\nAdd one line to ${LEDGER} naming the dep and the omission you tried (each entry is re-checked, and must NOT hold):\n` +
-        // The printed line has to be a receipt that verifies: a template whose
-        // shape the checker rejects leaves an agent that followed it verbatim
-        // blocked on its own instructions. `absent` names a symbol the checker
-        // searches the whole tracked tree for, and the claim survives only if the
-        // search comes back empty — so replace it with the symbol you actually
-        // looked for.
-        `  {"claim":"new-dep","rung":7,"dep":"${r.uncitedDeps[0].dep}","tried":[{"rung":2,"absent":"<symbol you searched for>"}]}\n` +
-        `Run \`omit verify\` to check it before committing.`
-    )
-  }
-  if (r.hazards.some((h) => h.type === 'injection')) {
-    objections.push(`injection-prone lines staged. Parameterize, use safe APIs, or mark reviewed lines with omit-allow: <reason>.`)
-  }
-  const lintFails = (r.lint ?? []).filter((l) => !l.ok)
-  if (lintFails.length) {
-    objections.push(`the repo's own linter is failing on staged files.\n${lintFails.map((l) => `[${l.linter}]\n${l.output}`).join('\n')}`)
-  }
-  if (!objections.length) return
-  const block = mode !== 'margin'
-  console.error(`\n${objections.map((o) => `${block ? '⛔' : '⚠'} omit gate: ${o}`).join('\n\n')}${block ? '' : '\n\n(margin mode: reported, not enforced)'}`)
-  if (block) process.exit(1)
+  return { all, code }
 }
 
 function check(files) {
@@ -683,16 +757,27 @@ function hookInstall() {
   const dir = hooksDir()
   const hookPath = join(dir, 'pre-commit')
   const existing = existsSync(hookPath) ? readFileSync(hookPath, 'utf8') : null
-  const GATE = /@sriinnu\/omit(?:@[\w.-]+)? gate/g
+  // A bare `omit` on PATH skips npx's ~3s start and works offline; npx at this
+  // exact version is the fallback. Either spelling counts as an installed gate.
+  const onPath = (process.env.PATH ?? '').split(delimiter).some((d) => {
+    try {
+      accessSync(join(d, 'omit'), constants.X_OK)
+      return true
+    } catch {
+      return false
+    }
+  })
+  const gateCmd = onPath ? 'omit gate' : `npx -y @sriinnu/omit@${version} gate`
+  const GATE = /(?:npx -y @sriinnu\/omit(?:@[\w.-]+)?|(?<![\w@/.-])omit) gate\b/g
   if (existing !== null && GATE.test(existing)) {
     // An older pin keeps running that version's gate: move it to this one.
-    const pinned = existing.replace(GATE, () => `@sriinnu/omit@${version} gate`)
+    const pinned = existing.replace(GATE, () => gateCmd)
     if (pinned === existing) return console.log(`skip  pre-commit gate already installed at ${hookPath}`)
     writeFileSync(hookPath, pinned)
     return console.log(`updated ${hookPath}: the pre-commit gate now runs omit ${version}`)
   }
   // Pinned: an unpinned npx runs whatever is latest on the registry at commit time.
-  const line = `npx -y @sriinnu/omit@${version} gate || exit 1\n`
+  const line = `${gateCmd} || exit 1\n`
   if (existing === null) {
     writeFileSync(hookPath, '#!/bin/sh\n' + line)
   } else {
@@ -713,7 +798,7 @@ function hookInstall() {
         '  repo on this machine is not what "install the gate here" means.\n' +
         `  To make this gate effective here:   git config core.hooksPath .git/hooks\n` +
         `  To use your global directory instead, add this line to ${shadow.value}/pre-commit:\n` +
-        `    npx -y @sriinnu/omit@${version} gate || exit 1`
+        `    ${gateCmd} || exit 1`
     )
   }
 }
@@ -843,7 +928,7 @@ async function codemode(args) {
 const [cmd, ...rest] = process.argv.slice(2)
 try {
   if (cmd === 'audit') audit(rest)
-  else if (cmd === 'gate') gate()
+  else if (cmd === 'gate') gate(rest)
   else if (cmd === 'check') check(rest)
   else if (cmd === 'lint') lint(rest)
   else if (cmd === 'guard') guard(rest)
@@ -876,7 +961,7 @@ try {
   else if (cmd === 'init') rest[0] === '--check' ? initCheck() : init(rest[0])
   else if (targets[cmd]) init(cmd) // back-compat: `omit cursor`
   else {
-    console.error('usage: omit <init [--check]|audit [--fail-on <none|secret|hazard>]|check|gate|lint|guard|leak|verify|mode|codemode|context|doctor [--json]|hook install [codex|claude|ribhu] [--context]|hook run <hook>>')
+    console.error('usage: omit <init [--check]|audit [--fail-on <none|secret|hazard|gate>]|check|gate [--range <base>..<head>] [--json]|lint|guard|leak|verify|mode|codemode|context|doctor [--json]|hook install [codex|claude|ribhu] [--context]|hook run <hook>>')
     process.exit(cmd ? 1 : 0)
   }
 } catch (e) {
