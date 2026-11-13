@@ -1,5 +1,5 @@
 name: omit audit
-description: Comment the omit verdict (net diff, new deps, hazards, lint) on pull requests — works whatever agent or editor wrote the code.
+description: Comment the omit verdict (net diff, new deps, hazards, lint) on pull requests, and optionally gate every commit in them. Works whatever agent or editor wrote the code.
 branding:
   icon: scissors
   color: gray-dark

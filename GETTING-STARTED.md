@@ -48,7 +48,7 @@ For live hooks (not just the discipline), Codex CLI has its own hooks system wit
 npx @sriinnu/omit hook install codex
 ```
 
-Writes `.codex/hooks.json` pointing at this install's hook scripts. The command, leak and tamper sentinels run before each `Bash` command, and the tamper sentinel checks file edits too. The dependency, hazard and lint sentinels are PostToolUse hooks for `apply_patch|Edit|Write` (and the first two for `Bash`), so they object after the write, not before it. The Final Draft gate runs on Stop. Payload tests cover these hooks; live firing inside a Codex session is not yet verified end to end. Codex requires trusting new hook definitions once per session — run `/hooks` in a Codex session to review them.
+Writes `.codex/hooks.json` pointing at this install's hook scripts. The command, leak and tamper sentinels run before each `Bash` command, and the tamper sentinel checks file edits too. The dependency, hazard and lint sentinels are PostToolUse hooks for `apply_patch|Edit|Write` (and the first two for `Bash`), so they object after the write, not before it. The Final Draft gate runs on Stop. The file sentinels read `apply_patch` from `tool_input.command`, check every added or updated path and move destination, skip deleted files, and object to a malformed patch envelope. Payload tests cover these hooks; live firing inside a Codex session is not yet verified end to end. Codex requires trusting new hook definitions once per session — run `/hooks` in a Codex session to review them.
 
 ## Takumi
 
@@ -124,6 +124,22 @@ jobs:
 ```
 
 Comments the verdict (net lines, new deps, hazards, lint) on every PR.
+
+## Context controls
+
+Optional, local, and no model or provider API. Install with `omit hook install codex --context` or `omit hook install claude --context`; default installs add none of this. They add advisory broad-read warnings and a text output guard. Other hosts need the stdin contract below; automatic interception is not universal.
+
+- **Large output.** A plain-string shell result over 6,000 characters is archived under the OS temporary directory and replaced with head and tail excerpts, selected error lines and the full-output path. `OMIT_OUTPUT_CHARS` (1000 to 100000) sets the excerpt budget. Structured results (objects, arrays, MCP content) are left intact, and a storage failure keeps the original result and emits a diagnostic. No existing transcript is rewritten.
+- **Archives can hold sensitive output.** Files are mode 0600 in a mode 0700 directory on POSIX, and persist until temporary storage is cleaned. Inspect one when a missing middle section matters; the error-line extraction is heuristic.
+- **Repeats.** Three consecutive identical command and result pairs in the same cwd and session produce one advisory warning; a changed pair resets the counter. Only hashes and a bounded counter are stored. It does not prove filesystem state is unchanged, and parallel invocations may undercount, so it is not a gate.
+
+For another host, run `omit context` with JSON on stdin:
+
+```json
+{"hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"example","cwd":"/your/project","tool_input":{"command":"your command"},"tool_response":"plain text output"}
+```
+
+Use `PreToolUse` for read-scope advice. The shell names `Bash`, `exec_command` and `shell` are accepted (`tool_input.cmd` too). `systemMessage` is advisory; `decision: "block"` with `reason` requests post-tool feedback that replaces the result in Codex. Other hosts must translate that into their own replacement API, and some only append feedback, so verify delivery before claiming context savings. No token-saving guarantee is inferred from character counts. To uninstall the optional controls, remove the `context-sentinel.mjs` entries. `omit init skill` copies the packaged skill (`skills/omit/SKILL.md`) to `.agents/skills/omit/SKILL.md`.
 
 ## CLI cheat sheet
 
