@@ -193,7 +193,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: sriinnu/omit@v0.8.0
+      - uses: sriinnu/omit@v0.9.0
         with: { gate: true, fail-on: secret }
 ```
 
